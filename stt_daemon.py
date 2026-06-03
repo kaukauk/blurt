@@ -40,6 +40,11 @@ MIN_SECONDS  = 0.3   # ignore accidental ultra-short taps
 
 # Voice-activity gating for the visualiser: the bell only reacts when Silero VAD
 # thinks it's hearing speech, so music/noise (even in the voice band) is ignored.
+# Mouse button that toggles recording (press to start, press again to stop).
+# 9 = "forward" on most mice. Set 0 to disable. The button is grabbed (consumed)
+# so it no longer triggers forward-navigation while bound.
+MOUSE_BUTTON = int(os.environ.get("STT_MOUSE_BUTTON", "9"))
+
 ENABLE_VAD   = os.environ.get("STT_VAD", "1") != "0"
 VAD_WINDOW   = 1536   # samples fed to Silero each tick (multiple of 512)
 VAD_ON       = 0.45   # gate fully open at/above this speech probability
@@ -222,6 +227,52 @@ class SpaceStopper:
                         print(f"[stt] on_press error: {e}", file=sys.stderr)
 
 
+class ButtonToggle:
+    """
+    Permanently grabs a mouse button (e.g. 9 = forward) and calls `on_press` on
+    each click. The grab consumes the button, so it no longer triggers its normal
+    action (forward navigation) while bound. A short debounce prevents an
+    accidental double-click from toggling start->stop instantly.
+    """
+
+    MODS = (0, X.LockMask, X.Mod2Mask, X.LockMask | X.Mod2Mask)
+    DEBOUNCE = 0.4
+
+    def __init__(self, button, on_press):
+        self._button = button
+        self._on_press = on_press
+        self._disp = Display()
+        self._root = self._disp.screen().root
+        self._last = 0.0
+        for m in self.MODS:
+            try:
+                self._root.grab_button(
+                    button, m, False, X.ButtonPressMask,
+                    X.GrabModeAsync, X.GrabModeAsync, X.NONE, X.NONE)
+            except Exception as e:
+                print(f"[stt] grab_button failed: {e}", file=sys.stderr)
+        self._disp.flush()
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):
+        fd = self._disp.fileno()
+        while True:
+            r, _, _ = select.select([fd], [], [], 0.2)
+            if not r:
+                continue
+            for _ in range(self._disp.pending_events()):
+                ev = self._disp.next_event()
+                if ev.type == X.ButtonPress and ev.detail == self._button:
+                    now = time.time()
+                    if now - self._last < self.DEBOUNCE:
+                        continue
+                    self._last = now
+                    try:
+                        self._on_press()
+                    except Exception as e:
+                        print(f"[stt] button on_press error: {e}", file=sys.stderr)
+
+
 class Daemon:
     def __init__(self):
         print(f"[stt] loading model '{MODEL_NAME}' on {DEVICE} ({COMPUTE_TYPE}) ...",
@@ -234,6 +285,14 @@ class Daemon:
         self._ctl = threading.Lock()     # serialize start/stop transitions
         self._rec_start = 0.0
         self._stopper = SpaceStopper(self._on_space)  # swallows Space to stop
+        self._mouse = None                            # forward-button toggle
+        if MOUSE_BUTTON > 0:
+            try:
+                self._mouse = ButtonToggle(MOUSE_BUTTON, self.toggle)
+                print(f"[stt] mouse button {MOUSE_BUTTON} toggles recording",
+                      flush=True)
+            except Exception as e:
+                print(f"[stt] mouse bind failed: {e}", file=sys.stderr)
         self._ui = None                               # waveform overlay process
         # Voice-activity model for gating the visualiser (cheap, CPU, bundled).
         self._vad = None

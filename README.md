@@ -1,9 +1,10 @@
 # linux-stt — local push-to-toggle dictation
 
 Fast, accurate, fully-local speech-to-text for Linux/X11. Press **Alt+Space**
-to start dictating, press **Space** to stop — the transcript is typed straight
-into whatever window has focus. Both keystrokes are swallowed, so neither the
-starting Alt+Space nor the stopping Space leaves a stray character behind.
+(or your **mouse forward button**) to start dictating, press **Space** (or the
+forward button again) to stop — the transcript is typed straight into whatever
+window has focus. The trigger keystrokes are swallowed, so neither the starting
+Alt+Space nor the stopping Space leaves a stray character behind.
 
 ## What it uses
 
@@ -24,6 +25,10 @@ starting Alt+Space nor the stopping Space leaves a stray character behind.
   - **Alt+Space = start.** Bound as an XFCE keyboard shortcut to `<Alt>space`.
     Because XFCE grabs the combo, **no stray space is inserted**. (XFCE's default
     Alt+Space "window menu" was disabled to free the combo.)
+  - **Mouse forward button (button 9) = toggle.** Press to start, press again to
+    stop. The daemon holds an active X grab on the button, so it both triggers
+    recording and is consumed (no forward-navigation while bound). Change the
+    button with `STT_MOUSE_BUTTON` (set `0` to disable).
   - **Space = stop.** While recording, the daemon holds an **active X key-grab**
     on Space (via `python-xlib`), so the press is delivered to the daemon and
     **swallowed** — it never reaches the focused window. A 0.4 s debounce ignores
