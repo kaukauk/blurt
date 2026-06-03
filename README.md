@@ -39,9 +39,21 @@ First run downloads the model (~1.5 GB) to `~/.cache/huggingface`.
 blurt toggle     # start, or stop+transcribe if already recording
 blurt start      # start recording
 blurt stop       # stop and transcribe
+blurt config     # write/locate ~/.config/blurt/config.toml
+blurt report     # open a pre-filled GitHub bug report in your browser
 blurt daemon     # run the daemon in the foreground (debug)
 blurt version
 ```
+
+## Errors & bug reports
+
+blurt is built to never need the terminal. If something goes wrong it logs the
+full traceback locally to `~/.cache/blurt/blurt.log` (rotating) and shows a
+**pop-up** with a one-click **“Report on GitHub”** button that opens a
+*pre-filled* issue in your browser — you just review and submit. Nothing is ever
+sent automatically, and home paths/usernames are redacted. You can also trigger
+it any time with `blurt report`, or disable the pop-up with `[report] popup =
+false`.
 
 ## Configuration
 

@@ -32,6 +32,10 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "config.toml")
 UI_STATE_FILE = os.path.join(CONFIG_DIR, "ui.json")
 TIMING_FILE = os.path.join(CONFIG_DIR, "timing.json")
 
+CACHE_DIR = os.path.join(
+    os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), APP)
+LOG_FILE = os.path.join(CACHE_DIR, "blurt.log")
+
 
 def _load_file():
     if tomllib is None:
@@ -105,6 +109,11 @@ NOTIFY = _as_bool(_get("ui", "notifications", False, "BLURT_NOTIFY"))
 # is focused).
 CLIPBOARD = _as_bool(_get("output", "clipboard", True, "BLURT_CLIPBOARD"))
 VAD_WINDOW = 1536
+
+# --- error reporting --------------------------------------------------------
+REPO_URL = _get("report", "repo", "https://github.com/kaukauk/blurt", "BLURT_REPO")
+# Show a GUI pop-up on error with a one-click "Report on GitHub" button.
+ERROR_POPUP = _as_bool(_get("report", "popup", True, "BLURT_ERROR_POPUP"))
 
 UI_PYTHON = os.environ.get("BLURT_UI_PYTHON", sys.executable)
 
@@ -240,6 +249,10 @@ notifications = false     # desktop popups; off because the overlay shows state
 
 [output]
 clipboard = true          # also copy each transcription to the clipboard
+
+[report]
+popup = true              # on error, show a pop-up with a one-click GitHub report
+# repo = "https://github.com/kaukauk/blurt"   # where reports are filed
 """
 
 
