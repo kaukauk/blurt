@@ -97,12 +97,6 @@ MIN_SECONDS = float(_get("model", "min_seconds", 0.3, "BLURT_MIN_SECONDS", float
 # --- input ------------------------------------------------------------------
 # mode: "toggle" (press to start, press/stop-key to stop) or "hold" (push-to-talk)
 MODE = str(_get("input", "mode", "toggle", "BLURT_MODE")).lower()
-# Mouse button that toggles plain dictation: start, or stop + transcribe + type
-# (no Enter). Default 8 = mouse "back"; 0 disables.
-TOGGLE_BUTTON = int(_get("input", "toggle_button", 8, "BLURT_TOGGLE_BUTTON", int))
-# Mouse button that toggles "submit" dictation: start, or stop + transcribe +
-# type, then press Enter. Default 9 = mouse "forward"; 0 disables.
-SUBMIT_BUTTON = int(_get("input", "submit_button", 9, "BLURT_SUBMIT_BUTTON", int))
 # Optional global trigger key the daemon grabs directly, e.g. "ctrl+grave".
 # Empty by default: most desktops reserve common combos (Alt+Space is the XFCE
 # window menu), so binding `blurt toggle` to a key in your DE is more reliable.
@@ -119,6 +113,118 @@ SUBMIT_KEY = _get("input", "submit_key", "enter", "BLURT_SUBMIT_KEY")
 CANCEL_KEY = _get("input", "cancel_key", "alt+backspace", "BLURT_CANCEL_KEY")
 # Seconds to wait after typing before pressing Enter (lets the app catch up).
 SUBMIT_DELAY = float(_get("input", "submit_delay", 0.6, "BLURT_SUBMIT_DELAY", float))
+
+# --- keybinds ---------------------------------------------------------------
+# Each action maps to a list of triggers; a trigger is a key spec ("space",
+# "alt+backspace", "ctrl+grave") or a mouse button ("button8"). Add as many as
+# you like — every one is grabbed (input is consumed). Edit via `blurt settings`.
+#   behavior: "start" = begin recording | "plain" = stop + transcribe
+#             "submit" = stop + transcribe + Enter | "cancel" = stop + discard
+#   scope:    "global" = fires any time | "recording" = only while recording
+KEYBIND_SPEC = [
+    ("start",  "Start recording",          "start",  "global"),
+    ("stop",   "Stop (transcribe)",        "plain",  "recording"),
+    ("submit", "Submit (stop + Enter)",    "submit", "recording"),
+    ("cancel", "Delete (cancel & discard)", "cancel", "recording"),
+]
+KEYBIND_ACTIONS = [s[0] for s in KEYBIND_SPEC]
+
+
+def _norm_triggers(v):
+    if v is None:
+        return []
+    if isinstance(v, str):
+        return [v] if v.strip() else []
+    return [str(x).strip() for x in v if str(x).strip()]
+
+
+def _legacy_keybinds():
+    """Build the keybind map from the old scalar settings (back-compat)."""
+    kb = {a: [] for a in KEYBIND_ACTIONS}
+    if TRIGGER_KEY:
+        kb["start"].append(str(TRIGGER_KEY))
+    if STOP_KEY:
+        kb["stop"].append(str(STOP_KEY))
+    if SUBMIT_KEY:
+        kb["submit"].append(str(SUBMIT_KEY))
+    if CANCEL_KEY:
+        kb["cancel"].append(str(CANCEL_KEY))
+    return kb
+
+
+def keybinds():
+    """Effective action -> [triggers]. A [keybinds] section overrides per action;
+    actions it omits fall back to the legacy scalar settings."""
+    kb = _legacy_keybinds()
+    sec = _FILE.get("keybinds")
+    if isinstance(sec, dict):
+        for a in KEYBIND_ACTIONS:
+            if a in sec:
+                kb[a] = _norm_triggers(sec[a])
+    return kb
+
+
+# --- writing / reloading config ---------------------------------------------
+def _toml_value(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+    s = str(v).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{s}"'
+
+
+def _dump_toml(data):
+    lines, tables = [], []
+    for k, v in data.items():
+        if isinstance(v, dict):
+            tables.append((k, v))
+        else:
+            lines.append(f"{k} = {_toml_value(v)}")
+    for name, tbl in tables:
+        lines.append("")
+        lines.append(f"[{name}]")
+        for kk, vv in tbl.items():
+            lines.append(f"{kk} = {_toml_value(vv)}")
+    return "\n".join(lines) + "\n"
+
+
+def save_config(updates):
+    """Merge `updates` (section -> dict of key->value) into config.toml.
+
+    Round-trips the parsed file so unknown sections/keys are preserved (inline
+    comments are not). `blurt settings` is the intended writer.
+    """
+    data = _load_file()
+    for section, vals in updates.items():
+        if isinstance(vals, dict):
+            cur = data.get(section)
+            data[section] = {**(cur if isinstance(cur, dict) else {}), **vals}
+        else:
+            data[section] = vals
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    header = ("# blurt configuration — managed by `blurt settings`.\n"
+              "# BLURT_* environment variables still override these.\n\n")
+    tmp = CONFIG_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(header + _dump_toml(data))
+    os.replace(tmp, CONFIG_FILE)
+
+
+def reload():
+    """Re-read config.toml and refresh the trigger/runtime globals (not the model)."""
+    global _FILE, MODE, SUBMIT_DELAY
+    global TRIGGER_KEY, STOP_KEY, SUBMIT_KEY, CANCEL_KEY, CLIPBOARD
+    _FILE = _load_file()
+    MODE = str(_get("input", "mode", "toggle", "BLURT_MODE")).lower()
+    SUBMIT_DELAY = float(_get("input", "submit_delay", 0.6, "BLURT_SUBMIT_DELAY", float))
+    CLIPBOARD = _as_bool(_get("output", "clipboard", True, "BLURT_CLIPBOARD"))
+    TRIGGER_KEY = _get("input", "key", "", "BLURT_KEY")
+    STOP_KEY = _get("input", "stop_key", "space", "BLURT_STOP_KEY")
+    SUBMIT_KEY = _get("input", "submit_key", "enter", "BLURT_SUBMIT_KEY")
+    CANCEL_KEY = _get("input", "cancel_key", "alt+backspace", "BLURT_CANCEL_KEY")
 
 # --- ui / features ----------------------------------------------------------
 SHOW_UI = _as_bool(_get("ui", "enabled", True, "BLURT_UI"))
@@ -281,16 +387,14 @@ beam_size = 5
 
 [input]
 mode = "toggle"           # "toggle" (press start / press stop) or "hold" (push-to-talk)
-toggle_button = 8         # mouse button: start, or stop + transcribe (no Enter); 0 disables
-submit_button = 9         # mouse button: start, or stop + transcribe, then Enter; 0 disables
-stop_key = "space"        # key that stops while recording in toggle mode; "" to disable
-submit_key = "enter"      # while recording: stop, transcribe, then press Enter; "" to disable
-cancel_key = "alt+backspace" # while recording: cancel + discard (nothing typed); "" to disable
+# Keybinds are best edited with `blurt settings`. These scalars seed the
+# defaults; the [keybinds] section (written by the settings window) overrides
+# them and supports multiple binds per action.
+# key = "ctrl+grave"      # a key that STARTS recording (also `blurt toggle` via your DE)
+stop_key = "space"        # while recording: stop + transcribe
+submit_key = "enter"      # while recording: stop + transcribe, then press Enter
+cancel_key = "alt+backspace" # while recording: cancel + discard (nothing typed)
 submit_delay = 0.6        # seconds to wait after typing before pressing Enter
-# key = "ctrl+grave"      # optional: have blurt grab a key directly. Most desktops
-#                         # reserve combos like Alt+Space, so prefer binding
-#                         # `blurt toggle` to a hotkey in your DE. Required for
-#                         # "hold" mode on a key (a DE binding can't do hold).
 # typer = "xdotool"       # force a typing backend: xdotool | wtype | ydotool
 
 [ui]

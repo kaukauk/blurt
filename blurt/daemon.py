@@ -158,17 +158,22 @@ def _parse_keyspec(disp, spec):
     keyalias = {"enter": "Return", "return": "Return", "esc": "Escape",
                 "del": "Delete", "ins": "Insert", "pgup": "Prior", "pgdn": "Next",
                 "backspace": "BackSpace", "bksp": "BackSpace", "tab": "Tab"}
-    parts = [p for p in str(spec).lower().replace(" ", "").split("+") if p]
+    parts = [p for p in str(spec).replace(" ", "").split("+") if p]
     if not parts:
         return None
     *mods, key = parts
     mask = 0
     for m in mods:
-        if m not in modmap:
+        ml = m.lower()
+        if ml not in modmap:
             print(f"[blurt] unknown modifier {m!r} in key {spec!r}", file=sys.stderr)
-        mask |= modmap.get(m, 0)
-    key = keyalias.get(key, key)
-    ks = XK.string_to_keysym(key) or XK.string_to_keysym(key.capitalize())
+        mask |= modmap.get(ml, 0)
+    # Keep the key token's case (X keysyms like Page_Up, BackSpace are case-
+    # sensitive), but also try aliases / lower / capitalised forms.
+    kl = key.lower()
+    key = keyalias.get(kl, key)
+    ks = (XK.string_to_keysym(key) or XK.string_to_keysym(kl)
+          or XK.string_to_keysym(key.capitalize()))
     if not ks:
         print(f"[blurt] unknown key {key!r} in {spec!r}", file=sys.stderr)
         return None
@@ -185,13 +190,27 @@ def _safe(fn):
         print(f"[blurt] input handler error: {e}", file=sys.stderr)
 
 
+def _parse_trigger(disp, spec):
+    """Classify a bind: ('button', N) | ('key', mask, kc) | None."""
+    s = str(spec).strip().lower()
+    for prefix in ("button", "mouse", "btn"):
+        if s.startswith(prefix) and s[len(prefix):].isdigit():
+            return ("button", int(s[len(prefix):]))
+    pk = _parse_keyspec(disp, spec)
+    if pk:
+        return ("key", pk[0], pk[1])
+    return None
+
+
 class KeyTrigger:
     """Persistent X key-grab; toggle on press, or hold-to-talk (press/release)."""
 
     def __init__(self, mask, kc, mode, on_start, on_stop, on_toggle, label="key"):
+        self._mask = mask
         self._kc = kc
         self._mode = mode
         self._on_start, self._on_stop, self._on_toggle = on_start, on_stop, on_toggle
+        self._alive = True
         self._disp = Display()
         self._root = self._disp.screen().root
         self._down = False
@@ -209,9 +228,24 @@ class KeyTrigger:
     def _on_xerror(self, *_a):
         self._errs += 1
 
+    def close(self):
+        self._alive = False
+
+    def _teardown(self):
+        try:
+            for e in _LOCK_COMBOS:
+                try:
+                    self._root.ungrab_key(self._kc, self._mask | e)
+                except Exception:
+                    pass
+            self._disp.sync()
+            self._disp.close()
+        except Exception:
+            pass
+
     def _loop(self):
         fd = self._disp.fileno()
-        while True:
+        while self._alive:
             r, _, _ = select.select([fd], [], [], 0.02)
             # Deferred release (hold mode): fire stop unless cancelled by an
             # auto-repeat KeyPress within the window.
@@ -237,16 +271,19 @@ class KeyTrigger:
                         _safe(self._on_start)
                 elif ev.type == X.KeyRelease and self._mode == "hold":
                     self._release_at = time.time()
+        self._teardown()
 
 
 class ButtonTrigger:
     """Persistent X mouse-button grab; toggle on click, or hold-to-talk."""
 
     DEBOUNCE = 0.35
-    def __init__(self, button, mode, on_start, on_stop, on_toggle):
+
+    def __init__(self, button, mode, on_start, on_stop, on_toggle, label=None):
         self._button = button
         self._mode = mode
         self._on_start, self._on_stop, self._on_toggle = on_start, on_stop, on_toggle
+        self._alive = True
         self._disp = Display()
         self._root = self._disp.screen().root
         self._last = 0.0
@@ -259,16 +296,31 @@ class ButtonTrigger:
         self._disp.sync()
         if self._errs:
             print(f"[blurt] could not grab mouse button {button} "
-                  f"(in use?)", file=sys.stderr)
+                  f"({label or 'in use'}?)", file=sys.stderr)
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _bump(self):
         self._errs += 1
 
+    def close(self):
+        self._alive = False
+
+    def _teardown(self):
+        try:
+            for e in _LOCK_COMBOS:
+                try:
+                    self._root.ungrab_button(self._button, e)
+                except Exception:
+                    pass
+            self._disp.sync()
+            self._disp.close()
+        except Exception:
+            pass
+
     def _loop(self):
         fd = self._disp.fileno()
-        while True:
-            r, _, _ = select.select([fd], [], [], 0.2)
+        while self._alive:
+            r, _, _ = select.select([fd], [], [], 0.1)
             if not r:
                 continue
             for _ in range(self._disp.pending_events()):
@@ -286,27 +338,26 @@ class ButtonTrigger:
                         _safe(self._on_start)
                 elif ev.type == X.ButtonRelease and self._mode == "hold":
                     _safe(self._on_stop)
+        self._teardown()
 
 
-class StopKey:
-    """X key-grab active only while recording (toggle mode); press -> callback.
+class _WhileRecording:
+    """Base: an X grab that is active only while recording (toggle mode).
 
-    Supports an optional modifier mask (e.g. Alt for Alt+Delete), so it only
-    fires on the exact chord and leaves the bare key alone the rest of the time.
+    start()/stop() arm/disarm the grab; close() tears it down for reload.
+    Subclasses implement _grab(on) and _matches(ev) + fire on a matching press.
     """
 
-    def __init__(self, mask, kc, on_stop, label="key"):
-        self._mask = mask
-        self._kc = kc
-        self._on_stop = on_stop
+    def __init__(self, label="key"):
         self._label = label
         self._errs = 0
         self._warned = False
+        self._alive = True
+        self._want = False
+        self._grabbed = False
         self._disp = Display()
         self._disp.set_error_handler(lambda *_a: self._bump())
         self._root = self._disp.screen().root
-        self._want = False
-        self._grabbed = False
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _bump(self):
@@ -318,27 +369,22 @@ class StopKey:
     def stop(self):
         self._want = False
 
+    def close(self):
+        self._alive = False
+
     def _set_grab(self, on):
         before = self._errs
-        for e in _LOCK_COMBOS:
-            try:
-                if on:
-                    self._root.grab_key(self._kc, self._mask | e, True,
-                                        X.GrabModeAsync, X.GrabModeAsync)
-                else:
-                    self._root.ungrab_key(self._kc, self._mask | e)
-            except Exception:
-                pass
+        self._grab(on)
         self._disp.sync()
         self._grabbed = on
         if on and self._errs > before and not self._warned:
             self._warned = True
             print(f"[blurt] could not grab {self._label!r} (reserved by your "
-                  f"desktop?); pick a different key in config.toml", file=sys.stderr)
+                  f"desktop?); pick a different bind in settings", file=sys.stderr)
 
     def _loop(self):
         fd = self._disp.fileno()
-        while True:
+        while self._alive:
             if self._want and not self._grabbed:
                 self._set_grab(True)
             elif not self._want and self._grabbed:
@@ -348,12 +394,78 @@ class StopKey:
                 continue
             for _ in range(self._disp.pending_events()):
                 ev = self._disp.next_event()
-                if (self._grabbed and ev.type == X.KeyPress
-                        and getattr(ev, "detail", None) == self._kc):
+                if self._grabbed and self._matches(ev):
                     try:
-                        self._on_stop()
+                        self._on_fire()
                     except Exception as e:
-                        print(f"[blurt] stop-key error: {e}", file=sys.stderr)
+                        print(f"[blurt] bind error: {e}", file=sys.stderr)
+        if self._grabbed:
+            self._set_grab(False)
+        try:
+            self._disp.close()
+        except Exception:
+            pass
+
+
+class StopKey(_WhileRecording):
+    """Key-grab active only while recording; press (with optional modifier) fires."""
+
+    def __init__(self, mask, kc, on_fire, label="key"):
+        self._mask, self._kc, self._cb = mask, kc, on_fire
+        super().__init__(label)
+
+    def _grab(self, on):
+        for e in _LOCK_COMBOS:
+            try:
+                if on:
+                    self._root.grab_key(self._kc, self._mask | e, True,
+                                        X.GrabModeAsync, X.GrabModeAsync)
+                else:
+                    self._root.ungrab_key(self._kc, self._mask | e)
+            except Exception:
+                pass
+
+    def _matches(self, ev):
+        return ev.type == X.KeyPress and getattr(ev, "detail", None) == self._kc
+
+    def _on_fire(self):
+        self._cb()
+
+
+class RecordingButton(_WhileRecording):
+    """Mouse-button grab active only while recording; press fires (debounced)."""
+
+    DEBOUNCE = 0.35
+
+    def __init__(self, button, on_fire, label="button"):
+        self._button, self._cb = button, on_fire
+        self._last = 0.0
+        super().__init__(label)
+
+    def _grab(self, on):
+        mask = X.ButtonPressMask | X.ButtonReleaseMask
+        for e in _LOCK_COMBOS:
+            try:
+                if on:
+                    self._root.grab_button(self._button, e, False, mask,
+                                           X.GrabModeAsync, X.GrabModeAsync,
+                                           X.NONE, X.NONE)
+                else:
+                    self._root.ungrab_button(self._button, e)
+            except Exception:
+                pass
+
+    def _matches(self, ev):
+        if ev.type != X.ButtonPress or getattr(ev, "detail", None) != self._button:
+            return False
+        now = time.time()
+        if now - self._last < self.DEBOUNCE:
+            return False
+        self._last = now
+        return True
+
+    def _on_fire(self):
+        self._cb()
 
 
 class Daemon:
@@ -373,7 +485,9 @@ class Daemon:
         self._rec_start = 0.0
         self._ui = None
         self._ui_phase = None     # "recording" | "transcribing" | None
-        self._rec_triggers = []   # grabs active only while recording (stop/submit)
+        self._global_triggers = []  # always-active grabs (toggle/submit buttons+keys)
+        self._rec_triggers = []     # grabs active only while recording (stop/submit/cancel)
+        self._reload_lock = threading.Lock()
         self._timing = self._load_timing()
 
         if _XOK:
@@ -399,44 +513,106 @@ class Daemon:
         C.notify("blurt ready", f"{C.MODE} mode — dictation is running")
         print(f"[blurt] ready ({C.MODE} mode)", flush=True)
 
+    def _action_cb(self, behavior):
+        return {
+            "start":  self.start_recording,
+            "plain":  self.stop_recording,
+            "submit": lambda: self.stop_recording(submit=True),
+            "cancel": self.cancel_recording,
+        }[behavior]
+
     def _setup_triggers(self):
+        """Build one grab per physical key/button, dispatching by recording state.
+
+        A trigger bound to a global ("start") action AND a while-recording action
+        (stop/submit/delete) becomes a single always-grabbed dispatcher: idle
+        press starts, recording press runs the while-recording action. A trigger
+        bound only to a while-recording action is grabbed only while recording, so
+        common keys (Space, Enter) still work normally when idle.
+        """
+        meta = {a: (beh, scope) for a, _l, beh, scope in C.KEYBIND_SPEC}
+        kb = C.keybinds()
+
+        if C.MODE == "hold":          # push-to-talk: only the global start binds
+            disp = Display()
+            for spec in kb.get("start", []):
+                p = _parse_trigger(disp, spec)
+                if not p:
+                    print(f"[blurt] skipping unparseable bind {spec!r}", file=sys.stderr)
+                    continue
+                if p[0] == "button":
+                    t = ButtonTrigger(p[1], "hold", self.start_recording,
+                                      self.stop_recording, None, label=spec)
+                else:
+                    t = KeyTrigger(p[1], p[2], "hold", self.start_recording,
+                                   self.stop_recording, None, label=spec)
+                self._global_triggers.append(t)
+                print(f"[blurt] {spec} -> hold (push-to-talk)", flush=True)
+            disp.close()
+            return
+
+        # toggle mode: group binds by physical trigger.
+        by_trigger = {}   # spec -> {"idle": cb|None, "rec": cb|None}
+        for action, specs in kb.items():
+            beh, scope = meta[action]
+            cb = self._action_cb(beh)
+            for spec in specs:
+                slot = by_trigger.setdefault(spec, {"idle": None, "rec": None})
+                key = "idle" if scope == "global" else "rec"
+                if slot[key] is None:
+                    slot[key] = cb
+
         disp = Display()
-        if C.TRIGGER_KEY:
-            spec = _parse_keyspec(disp, C.TRIGGER_KEY)
-            if spec:
-                KeyTrigger(spec[0], spec[1], C.MODE, self.start_recording,
-                           self.stop_recording, self.toggle, label=C.TRIGGER_KEY)
-                print(f"[blurt] key {C.TRIGGER_KEY!r} -> {C.MODE}", flush=True)
-        # Plain-toggle button: start, or stop + transcribe (no Enter).
-        if C.TOGGLE_BUTTON > 0:
-            ButtonTrigger(C.TOGGLE_BUTTON, C.MODE, self.start_recording,
-                          self.stop_recording, self.toggle)
-            print(f"[blurt] toggle button {C.TOGGLE_BUTTON} -> {C.MODE}", flush=True)
-        # Submit-toggle button: start, or stop + transcribe, then press Enter.
-        if C.SUBMIT_BUTTON > 0:
-            ButtonTrigger(C.SUBMIT_BUTTON, C.MODE, self.start_recording,
-                          lambda: self.stop_recording(submit=True), self.submit)
-            print(f"[blurt] submit button {C.SUBMIT_BUTTON} -> {C.MODE}", flush=True)
-        if C.MODE == "toggle" and C.STOP_KEY:
-            sk = _parse_keyspec(disp, C.STOP_KEY)
-            if sk:
-                self._rec_triggers.append(
-                    StopKey(sk[0], sk[1], self.stop_recording, label=C.STOP_KEY))
-                print(f"[blurt] stop key {C.STOP_KEY!r}", flush=True)
-        if C.MODE == "toggle" and C.SUBMIT_KEY:
-            sub = _parse_keyspec(disp, C.SUBMIT_KEY)
-            if sub:
-                self._rec_triggers.append(
-                    StopKey(sub[0], sub[1], lambda: self.stop_recording(submit=True),
-                            label=C.SUBMIT_KEY))
-                print(f"[blurt] submit key {C.SUBMIT_KEY!r}", flush=True)
-        if C.MODE == "toggle" and C.CANCEL_KEY:
-            cn = _parse_keyspec(disp, C.CANCEL_KEY)
-            if cn:
-                self._rec_triggers.append(
-                    StopKey(cn[0], cn[1], self.cancel_recording, label=C.CANCEL_KEY))
-                print(f"[blurt] cancel key {C.CANCEL_KEY!r}", flush=True)
+        for spec, slot in by_trigger.items():
+            p = _parse_trigger(disp, spec)
+            if not p:
+                print(f"[blurt] skipping unparseable bind {spec!r}", file=sys.stderr)
+                continue
+            idle_cb, rec_cb = slot["idle"], slot["rec"]
+
+            def dispatch(idle_cb=idle_cb, rec_cb=rec_cb):
+                if self.recorder.recording:
+                    if rec_cb:
+                        rec_cb()
+                elif idle_cb:
+                    idle_cb()
+
+            if idle_cb is not None:
+                # must be grabbed even when idle to catch the start press
+                if p[0] == "button":
+                    t = ButtonTrigger(p[1], "toggle", None, None, dispatch, label=spec)
+                else:
+                    t = KeyTrigger(p[1], p[2], "toggle", None, None, dispatch, label=spec)
+                self._global_triggers.append(t)
+            else:
+                # only fires while recording → dynamic grab (idle key passes through)
+                if p[0] == "button":
+                    t = RecordingButton(p[1], rec_cb, label=spec)
+                else:
+                    t = StopKey(p[1], p[2], rec_cb, label=spec)
+                self._rec_triggers.append(t)
+            roles = "+".join(r for r in ("start" if idle_cb else "",
+                                         "act" if rec_cb else "") if r)
+            print(f"[blurt] bind {spec} ({roles})", flush=True)
         disp.close()
+
+    def reload(self):
+        """Re-read config and rebuild input triggers without reloading the model."""
+        with self._reload_lock:
+            for t in self._global_triggers + self._rec_triggers:
+                try:
+                    t.close()
+                except Exception:
+                    pass
+            self._global_triggers, self._rec_triggers = [], []
+            time.sleep(0.3)   # let old grabs release before re-grabbing
+            C.reload()
+            if _XOK:
+                self._setup_triggers()
+                if self.recorder.recording:
+                    for t in self._rec_triggers:
+                        t.start()
+            print(f"[blurt] config reloaded ({C.MODE} mode)", flush=True)
 
     # --- timing history / estimate ----------------------------------------
     def _load_timing(self):
@@ -607,6 +783,13 @@ class Daemon:
         else:
             self.start_recording()
 
+    def cancel_toggle(self):
+        """For a global-scope cancel bind: start if idle, else cancel + discard."""
+        if self.recorder.recording:
+            self.cancel_recording()
+        else:
+            self.start_recording()
+
     def cancel_recording(self):
         """Stop recording and discard the audio — nothing is transcribed/typed."""
         with self._ctl:
@@ -663,7 +846,7 @@ class Daemon:
         print(f"[blurt] listening on {C.SOCKET_PATH}", flush=True)
         handlers = {"start": self.start_recording, "stop": self.stop_recording,
                     "toggle": self.toggle, "submit": self.submit,
-                    "cancel": self.cancel_recording}
+                    "cancel": self.cancel_recording, "reload": self.reload}
         while True:
             conn, _ = srv.accept()
             try:

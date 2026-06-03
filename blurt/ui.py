@@ -16,7 +16,9 @@ import sys
 import json
 import math
 import time
+import socket
 import random
+import subprocess
 import cairo
 import gi
 
@@ -34,6 +36,21 @@ PAD_R = 22
 ACCENT_TOP = (0.20, 0.92, 0.82)
 ACCENT_BOT = (0.29, 0.55, 1.00)
 DEFAULT_Y_FRAC = 0.25
+GEAR_X, GEAR_Y, GEAR_R = 34, 24, 8     # settings cog, above the status dot
+DEL_X, DEL_Y, DEL_R = 34, 80, 7        # delete/discard, below the status dot
+HIT_R = 14
+PANEL_BG = (0.07, 0.08, 0.11)
+
+
+def _send(cmd):
+    """Best-effort one-shot command to the daemon over its unix socket."""
+    try:
+        s = socket.socket(socket.AF_UNIX)
+        s.connect(C.SOCKET_PATH)
+        s.sendall(cmd.encode())
+        s.close()
+    except OSError:
+        pass
 
 
 def load_position():
@@ -117,10 +134,14 @@ class Overlay(Gtk.Window):
         self._quit_scheduled = False
         self._save_id = 0
 
-        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+        self._gear_hover = False
+        self._del_hover = False
+        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK
+                        | Gdk.EventMask.POINTER_MOTION_MASK)
         self.connect("draw", self.on_draw)
         self.connect("destroy", Gtk.main_quit)
         self.connect("button-press-event", self.on_button)
+        self.connect("motion-notify-event", self.on_motion)
         self.connect("configure-event", self.on_configure)
         GLib.io_add_watch(sys.stdin.fileno(), GLib.IO_IN | GLib.IO_HUP, self.on_stdin)
         GLib.timeout_add(16, self.on_tick)
@@ -132,10 +153,39 @@ class Overlay(Gtk.Window):
         return monitor.get_geometry()
 
     # ---- dragging + persistence ----------------------------------------
+    @staticmethod
+    def _hit(x, y, cx, cy):
+        return (x - cx) ** 2 + (y - cy) ** 2 <= HIT_R ** 2
+
+    def on_motion(self, _w, ev):
+        gear = self._hit(ev.x, ev.y, GEAR_X, GEAR_Y)
+        dele = self.mode == "recording" and self._hit(ev.x, ev.y, DEL_X, DEL_Y)
+        if gear != self._gear_hover or dele != self._del_hover:
+            self._gear_hover, self._del_hover = gear, dele
+            self.queue_draw()
+        return False
+
     def on_button(self, _w, ev):
         if ev.button == 1:
+            if self._hit(ev.x, ev.y, GEAR_X, GEAR_Y):
+                self._open_settings()
+                return True
+            if self.mode == "recording" and self._hit(ev.x, ev.y, DEL_X, DEL_Y):
+                _send("cancel")          # discard the recording
+                return True
             self.begin_move_drag(ev.button, int(ev.x_root), int(ev.y_root), ev.time)
         return True
+
+    def _open_settings(self):
+        _send("stop")                    # stop recording when opening settings
+        try:
+            env = dict(os.environ)
+            pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            env["PYTHONPATH"] = pkg_parent + os.pathsep + env.get("PYTHONPATH", "")
+            subprocess.Popen([sys.executable, "-m", "blurt.settings"], env=env,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            print(f"[blurt-ui] could not open settings: {e}", file=sys.stderr)
 
     def on_configure(self, _w, _ev):
         if self._save_id:
@@ -230,9 +280,60 @@ class Overlay(Gtk.Window):
 
         if self.mode == "recording":
             self._draw_recording(cr)
+            self._draw_delete(cr)
         else:
             self._draw_transcribing(cr)
+        self._draw_gear(cr)
         return False
+
+    def _draw_delete(self, cr):
+        cx, cy = DEL_X, DEL_Y
+        col = (1.0, 0.46, 0.48) if self._del_hover else (0.80, 0.40, 0.43)
+        a = 0.98 if self._del_hover else 0.7
+        cr.save()
+        cr.set_source_rgba(*col, a)
+        cr.set_line_width(1.6)
+        cr.set_line_cap(cairo.LINE_CAP_ROUND)
+        cr.set_line_join(cairo.LINE_JOIN_ROUND)
+        cr.move_to(cx - 6, cy - 4)                 # lid
+        cr.line_to(cx + 6, cy - 4)
+        cr.stroke()
+        cr.move_to(cx - 2, cy - 4)                 # handle
+        cr.line_to(cx - 2, cy - 6)
+        cr.line_to(cx + 2, cy - 6)
+        cr.line_to(cx + 2, cy - 4)
+        cr.stroke()
+        cr.move_to(cx - 4.5, cy - 2.5)             # can body (tapered)
+        cr.line_to(cx - 3.6, cy + 6)
+        cr.line_to(cx + 3.6, cy + 6)
+        cr.line_to(cx + 4.5, cy - 2.5)
+        cr.stroke()
+        for dx in (-1.6, 1.6):                     # ribs
+            cr.move_to(cx + dx, cy)
+            cr.line_to(cx + dx * 0.7, cy + 4.5)
+            cr.stroke()
+        cr.restore()
+
+    def _draw_gear(self, cr):
+        cx, cy, r = GEAR_X, GEAR_Y, GEAR_R
+        a = 0.95 if self._gear_hover else 0.5
+        col = (0.92, 0.93, 0.96) if self._gear_hover else (0.62, 0.64, 0.72)
+        cr.save()
+        cr.set_source_rgba(*col, a)
+        cr.set_line_cap(cairo.LINE_CAP_ROUND)
+        cr.set_line_width(r * 0.5)          # 8 spoke "teeth"
+        for i in range(8):
+            ang = (i / 8.0) * 2 * math.pi
+            cr.move_to(cx + math.cos(ang) * r * 0.55, cy + math.sin(ang) * r * 0.55)
+            cr.line_to(cx + math.cos(ang) * r * 1.05, cy + math.sin(ang) * r * 1.05)
+        cr.stroke()
+        cr.arc(cx, cy, r * 0.62, 0, 2 * math.pi)   # body ring
+        cr.set_line_width(r * 0.55)
+        cr.stroke()
+        cr.set_source_rgba(*PANEL_BG, 0.92)        # hub hole
+        cr.arc(cx, cy, r * 0.30, 0, 2 * math.pi)
+        cr.fill()
+        cr.restore()
 
     def _draw_dot(self, cr, color):
         pulse = 0.5 + 0.5 * math.sin(self.dot * 2 * math.pi)

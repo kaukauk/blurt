@@ -18,7 +18,9 @@ commands:
   cancel     stop recording and discard it (nothing transcribed)
   start      start recording
   stop       stop recording and transcribe
+  settings   open the settings window (keybinds, mode, …)
   config     write a default config.toml (if missing) and print its path
+  gpu        enable GPU acceleration (CUDA venv); `gpu --disable` to revert
   report     open a pre-filled GitHub bug report in your browser
   ui         run the waveform overlay standalone (debug)
   version    print version
@@ -55,6 +57,17 @@ def main(argv=None):
         ui.main()
     elif cmd in ("toggle", "submit", "cancel", "start", "stop"):
         sys.exit(0 if _send(cmd) else 1)
+    elif cmd == "settings":
+        import os
+        import subprocess
+        env = dict(os.environ)
+        pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env["PYTHONPATH"] = pkg_parent + os.pathsep + env.get("PYTHONPATH", "")
+        # Launch on a Python with gi (the overlay's UI_PYTHON), not necessarily us.
+        sys.exit(subprocess.run([C.UI_PYTHON, "-m", "blurt.settings"], env=env).returncode)
+    elif cmd == "gpu":
+        from . import gpu
+        sys.exit(gpu.main(argv[1:]))
     elif cmd == "config":
         created = C.write_default_config()
         print(("created " if created else "exists  ") + C.CONFIG_FILE)
