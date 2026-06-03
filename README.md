@@ -77,7 +77,10 @@ Environment variables read at startup (set them in the `[Service]` section of th
 unit file as `Environment=...`, then `systemctl --user daemon-reload && restart`):
 
 - `STT_MODEL`   (default `large-v3-turbo`) — e.g. `small.en`, `medium.en`, `distil-large-v3`.
-- `STT_COMPUTE` (default `float16`) — `int8_float16` saves VRAM, `float32` for CPU.
+- `STT_COMPUTE` (default `int8_float16`) — int8 is ~4x faster than `float16` on
+  Turing GPUs (GTX 16xx/20xx) with no accuracy loss here, because they lack
+  tensor cores but have fast int8. Use `float16` on newer RTX cards if preferred,
+  `float32` for CPU.
 - `STT_DEVICE`  (default `cuda`) — set `cpu` to run without the GPU.
 - `STT_LANG`    (default `en`).
 - `STT_PROMPT`  — `initial_prompt` that primes punctuation/capitalization (turbo
