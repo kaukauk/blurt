@@ -12,6 +12,7 @@ here so the rest of the code stays portable.
 
 import os
 import sys
+import time
 import shutil
 import subprocess
 
@@ -83,12 +84,143 @@ GPU_MODEL = _get("model", "gpu_name", "large-v3-turbo", "BLURT_GPU_MODEL")
 CPU_MODEL = _get("model", "cpu_name", "small.en", "BLURT_CPU_MODEL")
 _DEVICE = _get("model", "device", "auto", "BLURT_DEVICE")
 _COMPUTE = _get("model", "compute", "auto", "BLURT_COMPUTE")
-LANGUAGE = _get("model", "language", "en", "BLURT_LANG")
-PROMPT = _get(
-    "model", "prompt",
-    "Hello. Here is the dictation, written with correct punctuation, "
-    "capitalization, commas, periods, and question marks?", "BLURT_PROMPT")
+LANGUAGE = _get("model", "language", "auto", "BLURT_LANG")
+
+
+# Input-method engine name (fragment) → Whisper language code. Matched as a
+# substring of the lowercased IM name, so e.g. "libpinyin"/"table:cangjie" hit.
+_IM_LANG = {
+    "hangul": "ko", "korean": "ko", "hanja": "ko",
+    "mozc": "ja", "anthy": "ja", "kkc": "ja", "skk": "ja", "japanese": "ja",
+    "pinyin": "zh", "shuangpin": "zh", "wubi": "zh", "wbpy": "zh", "wbx": "zh",
+    "rime": "zh", "cangjie": "zh", "zhuyin": "zh", "chewing": "zh",
+    "chinese": "zh", "sunpinyin": "zh", "erbi": "zh",
+    "unikey": "vi", "viqr": "vi", "vietnamese": "vi",
+    "thai": "th", "arabic": "ar", "hebrew": "he", "russian": "ru",
+}
+# XKB layout code → Whisper language. The code is the XX in fcitx5 "keyboard-XX",
+# ibus "xkb:XX::…", or a bare layout symbol like "us"/"de(nodeadkeys)"/"us,ru".
+_LAYOUT_LANG = {
+    "us": "en", "gb": "en", "uk": "en", "ie": "en", "au": "en", "nz": "en",
+    "za": "en", "ng": "en", "ph": "en", "ca": "en", "in": "en",
+    "fr": "fr", "be": "fr", "ch": "de", "de": "de", "at": "de",
+    "es": "es", "latam": "es", "it": "it", "pt": "pt", "br": "pt",
+    "ru": "ru", "ua": "uk", "by": "be", "pl": "pl", "cz": "cs", "sk": "sk",
+    "nl": "nl", "se": "sv", "no": "no", "dk": "da", "fi": "fi", "is": "is",
+    "gr": "el", "tr": "tr", "hu": "hu", "ro": "ro", "bg": "bg", "hr": "hr",
+    "rs": "sr", "si": "sl", "ee": "et", "lv": "lv", "lt": "lt", "mk": "mk",
+    "al": "sq", "mt": "mt", "jp": "ja", "kr": "ko", "cn": "zh", "tw": "zh",
+    "th": "th", "vn": "vi", "ir": "fa", "af": "ps", "il": "he",
+    "ara": "ar", "sa": "ar", "eg": "ar", "iq": "ar", "sy": "ar", "ma": "ar",
+    "ge": "ka", "am": "hy", "az": "az", "kz": "kk", "uz": "uz",
+}
+
+
+def _layout_to_lang(sym):
+    """Map a raw XKB layout symbol (e.g. 'us', 'de(nodeadkeys)', 'us,ru') to a
+    Whisper code, or None. Takes the first group and strips any variant."""
+    if not sym:
+        return None
+    code = sym.strip().lower().split(",")[0].split("(")[0].split(":")[0].strip()
+    return _LAYOUT_LANG.get(code)
+
+
+def _im_to_lang(name):
+    """Map an input-method name to a Whisper code, or None. Handles IME engines
+    (hangul, mozc, libpinyin…) and the layout IMs used by fcitx5/ibus."""
+    if not name:
+        return None
+    n = name.strip().lower()
+    if n.startswith("keyboard-"):          # fcitx5 layout IM, e.g. keyboard-de
+        return _layout_to_lang(n[len("keyboard-"):])
+    if n.startswith("xkb:"):               # ibus layout IM, e.g. xkb:de::ger
+        return _layout_to_lang(n[len("xkb:"):])
+    for key, lang in _IM_LANG.items():     # engine IM, e.g. hangul, mozc, rime
+        if key in n:
+            return lang
+    return _layout_to_lang(n)              # last resort: a bare layout symbol
+
+
+def _run(cmd):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=0.5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _src_fcitx():
+    fc = shutil.which("fcitx5-remote") or shutil.which("fcitx-remote")
+    return _im_to_lang(_run([fc, "-n"])) if fc else None
+
+
+def _src_ibus():
+    ib = shutil.which("ibus")
+    return _im_to_lang(_run([ib, "engine"])) if ib else None
+
+
+def _src_xkb_tool():
+    """Plain XKB layout switchers (no IME) via a small helper, if installed."""
+    xs = shutil.which("xkb-switch")
+    if xs:
+        return _layout_to_lang(_run([xs]))
+    xls = shutil.which("xkblayout-state")
+    if xls:
+        return _layout_to_lang(_run([xls, "print", "%s"]))
+    return None
+
+
+def _src_kde():
+    """KDE Plasma's native keyboard-layout switching, via its D-Bus service."""
+    qd = shutil.which("qdbus") or shutil.which("qdbus6") or shutil.which("qdbus-qt5")
+    if not qd:
+        return None
+    try:
+        idx = int(_run([qd, "org.kde.keyboard", "/Layouts", "getLayout"]).strip())
+        codes = [ln.split()[0] for ln in
+                 _run([qd, "org.kde.keyboard", "/Layouts", "getLayoutsList"]).splitlines()
+                 if ln.strip()]
+        return _layout_to_lang(codes[idx]) if 0 <= idx < len(codes) else None
+    except (ValueError, IndexError):
+        return None
+
+
+def keyboard_language():
+    """Language of the currently active keyboard/input method, or None.
+
+    Works across the common Linux setups — fcitx5, ibus (incl. GNOME's plain
+    layout switches as xkb:XX), KDE Plasma layouts, and xkb-switch — so dictation
+    comes out in whatever language your keyboard is set to. None → auto-detect.
+    """
+    for src in (_src_fcitx, _src_ibus, _src_xkb_tool, _src_kde):
+        lang = src()
+        if lang:
+            return lang
+    return None
+
+
+def whisper_language():
+    """Language to pass to Whisper, or None to auto-detect each utterance.
+
+    "auto" (or empty) → None: Whisper detects the spoken language and writes it
+    back in that same language. "keyboard" → follow the focused window's input
+    method (fcitx5/ibus), falling back to auto-detect if it can't be read.
+    Otherwise pin a code, e.g. "ko"/"en". Needs a multilingual model
+    (large-v3-turbo, small, …); the `.en` models are English-only and ignore this.
+    """
+    lang = str(LANGUAGE).strip().lower()
+    if lang == "keyboard":
+        return keyboard_language()   # None → Whisper auto-detects this utterance
+    return None if lang in ("", "auto") else lang
+# Empty by default: large Whisper models punctuate/capitalize natively, and an
+# English prompt biases output toward English. Set this only to bias vocabulary
+# (proper nouns, jargon), e.g. "Kaustubh, GameBench, CTranslate2.".
+PROMPT = _get("model", "prompt", "", "BLURT_PROMPT")
 BEAM_SIZE = int(_get("model", "beam_size", 5, "BLURT_BEAM", int))
+# Whisper's internal Silero VAD trims audio to "speech" regions before
+# transcribing — it strips silence and cuts end-of-clip hallucinations. On by
+# default; set false if it ever drops trailing/soft words.
+VAD_FILTER = _as_bool(_get("model", "vad_filter", True, "BLURT_VAD_FILTER"))
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
@@ -113,6 +245,12 @@ SUBMIT_KEY = _get("input", "submit_key", "enter", "BLURT_SUBMIT_KEY")
 CANCEL_KEY = _get("input", "cancel_key", "alt+backspace", "BLURT_CANCEL_KEY")
 # Seconds to wait after typing before pressing Enter (lets the app catch up).
 SUBMIT_DELAY = float(_get("input", "submit_delay", 0.6, "BLURT_SUBMIT_DELAY", float))
+# Pause after switching the IME off before typing, so the app has applied it.
+IME_SETTLE = float(_get("input", "ime_settle", 0.15, "BLURT_IME_SETTLE", float))
+# Pause after setting the clipboard before sending the paste keystroke.
+PASTE_SETTLE = float(_get("input", "paste_settle", 0.05, "BLURT_PASTE_SETTLE", float))
+# Per-keystroke delay (ms) for the xdotool *type* fallback (non-paste path).
+TYPE_DELAY = int(_get("input", "type_delay", 12, "BLURT_TYPE_DELAY", int))
 
 # --- keybinds ---------------------------------------------------------------
 # Each action maps to a list of triggers; a trigger is a key spec ("space",
@@ -215,10 +353,11 @@ def save_config(updates):
 
 def reload():
     """Re-read config.toml and refresh the trigger/runtime globals (not the model)."""
-    global _FILE, MODE, SUBMIT_DELAY
+    global _FILE, MODE, SUBMIT_DELAY, LANGUAGE
     global TRIGGER_KEY, STOP_KEY, SUBMIT_KEY, CANCEL_KEY, CLIPBOARD
     _FILE = _load_file()
     MODE = str(_get("input", "mode", "toggle", "BLURT_MODE")).lower()
+    LANGUAGE = _get("model", "language", "auto", "BLURT_LANG")
     SUBMIT_DELAY = float(_get("input", "submit_delay", 0.6, "BLURT_SUBMIT_DELAY", float))
     CLIPBOARD = _as_bool(_get("output", "clipboard", True, "BLURT_CLIPBOARD"))
     TRIGGER_KEY = _get("input", "key", "", "BLURT_KEY")
@@ -296,6 +435,34 @@ def pick_typer():
 TYPER = pick_typer()
 
 
+def _ime_suspend():
+    """If an input method is actively composing (e.g. fcitx5 Hangul), turn it
+    off so synthetic keystrokes aren't re-composed into jamo. Returns a token
+    to pass to _ime_resume(), or None if nothing was changed."""
+    fc = shutil.which("fcitx5-remote") or shutil.which("fcitx-remote")
+    if not fc:
+        return None
+    try:
+        state = subprocess.run([fc], capture_output=True, text=True,
+                               timeout=0.5).stdout.strip()
+        if state == "2":                 # 2 = an engine is active/composing
+            subprocess.run([fc, "-c"], timeout=0.5)   # deactivate (passthrough)
+            time.sleep(IME_SETTLE)       # let fcitx5 tell the app before we type
+            print("[blurt] IME suspended for injection", flush=True)
+            return fc
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def _ime_resume(token):
+    if token:
+        try:
+            subprocess.run([token, "-o"], timeout=0.5)  # reactivate the engine
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
 def type_text(text):
     if not text:
         return
@@ -303,9 +470,15 @@ def type_text(text):
         print("[blurt] no typing tool found (install xdotool or wtype)",
               file=sys.stderr)
         return
+    ime = _ime_suspend()
     try:
+        # On X11, paste rather than synthesise keystrokes: xdotool reorders/drops
+        # non-ASCII (it remaps keycodes per char) and the IME re-composes them.
+        if TYPER == "xdotool" and CLIP_TOOL and _inject_paste(text):
+            return
         if TYPER == "xdotool":
-            cmd = ["xdotool", "type", "--clearmodifiers", "--delay", "0", "--", text]
+            cmd = ["xdotool", "type", "--clearmodifiers",
+                   "--delay", str(TYPE_DELAY), "--", text]
         elif TYPER == "wtype":
             cmd = ["wtype", text]
         elif TYPER == "ydotool":
@@ -315,6 +488,8 @@ def type_text(text):
         subprocess.run(cmd, check=False)
     except Exception as e:
         print(f"[blurt] typing via {TYPER} failed: {e}", file=sys.stderr)
+    finally:
+        _ime_resume(ime)
 
 
 def press_enter():
@@ -360,17 +535,81 @@ def _pick_clipboard():
 CLIP_TOOL = _pick_clipboard()
 
 
-def copy_clipboard(text):
-    """Put text on the system clipboard (best-effort)."""
-    if not (CLIPBOARD and text and CLIP_TOOL):
-        return
+def _clip_set(text):
+    """Write text to the clipboard, ignoring the CLIPBOARD preference."""
+    if not CLIP_TOOL:
+        return False
     cmd = {"xclip": ["xclip", "-selection", "clipboard"],
            "xsel": ["xsel", "--clipboard", "--input"],
            "wl-copy": ["wl-copy"]}[CLIP_TOOL]
     try:
         subprocess.run(cmd, input=text.encode(), check=False)
+        return True
     except Exception as e:
         print(f"[blurt] clipboard via {CLIP_TOOL} failed: {e}", file=sys.stderr)
+        return False
+
+
+def _clip_get():
+    """Read the current clipboard text (best-effort), or None."""
+    if not CLIP_TOOL:
+        return None
+    cmd = {"xclip": ["xclip", "-selection", "clipboard", "-o"],
+           "xsel": ["xsel", "--clipboard", "--output"],
+           "wl-copy": ["wl-paste", "-n"]}[CLIP_TOOL]
+    try:
+        out = subprocess.run(cmd, capture_output=True, timeout=0.5)
+        return out.stdout.decode(errors="replace")
+    except Exception:
+        return None
+
+
+def copy_clipboard(text):
+    """Put text on the system clipboard (best-effort), honoring CLIPBOARD."""
+    if not (CLIPBOARD and text and CLIP_TOOL):
+        return
+    _clip_set(text)
+
+
+_TERMINAL_HINTS = (
+    "term", "konsole", "kitty", "alacritty", "xterm", "rxvt", "tilix",
+    "terminator", "wezterm", "ghostty", "foot", "yakuake", "guake",
+    "st-256color", "cool-retro-term",
+)
+
+
+def _active_window_is_terminal():
+    """True if the focused X11 window looks like a terminal (pastes with
+    Ctrl+Shift+V rather than Ctrl+V)."""
+    try:
+        wid = subprocess.run(["xdotool", "getactivewindow"], capture_output=True,
+                             text=True, timeout=0.5).stdout.strip()
+        if not wid:
+            return False
+        cls = subprocess.run(["xdotool", "getwindowclassname", wid],
+                             capture_output=True, text=True,
+                             timeout=0.5).stdout.strip().lower()
+        return any(h in cls for h in _TERMINAL_HINTS)
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _inject_paste(text):
+    """Inject text via the clipboard + a paste keystroke. Atomic — avoids the
+    per-character keymap remapping xdotool needs for non-ASCII (which drops and
+    reorders CJK), and bypasses IME composition entirely. Returns True on
+    success."""
+    keep = bool(CLIPBOARD)
+    saved = None if keep else _clip_get()
+    if not _clip_set(text):
+        return False
+    time.sleep(PASTE_SETTLE)            # let the clipboard manager register it
+    combo = "ctrl+shift+v" if _active_window_is_terminal() else "ctrl+v"
+    subprocess.run(["xdotool", "key", "--clearmodifiers", combo], check=False)
+    if not keep:                        # restore the user's clipboard
+        time.sleep(0.25)                # but only after the app has read ours
+        _clip_set(saved or "")
+    return True
 
 
 DEFAULT_CONFIG = """\
@@ -382,7 +621,7 @@ gpu_name = "large-v3-turbo"  # model used when a CUDA GPU is available (accurate
 cpu_name = "small.en"        # model used on CPU (much faster than large-v3 there)
 device = "auto"           # "auto" | "cuda" | "cpu"
 compute = "auto"          # "auto" | "int8" | "int8_float16" | "float16" | "float32"
-language = "en"
+language = "auto"         # "auto" detects per utterance; "keyboard" follows your active keyboard layout / IM (fcitx5, ibus, KDE, xkb-switch); or pin "en","ko",… (multilingual model only)
 beam_size = 5
 
 [input]

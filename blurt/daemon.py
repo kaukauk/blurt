@@ -507,7 +507,7 @@ class Daemon:
 
         try:
             list(self.model.transcribe(np.zeros(C.SAMPLE_RATE, dtype=np.float32),
-                                       language=C.LANGUAGE)[0])
+                                       language=C.whisper_language())[0])
         except Exception:
             pass
         C.notify("blurt ready", f"{C.MODE} mode — dictation is running")
@@ -813,13 +813,21 @@ class Daemon:
                 if not progress:
                     C.notify("✍️ Transcribing…")
                 t0 = time.time()
-                segments, _ = self.model.transcribe(
-                    audio, language=C.LANGUAGE, beam_size=C.BEAM_SIZE,
-                    vad_filter=True, condition_on_previous_text=False,
-                    without_timestamps=True, initial_prompt=C.PROMPT)
+                lang = C.whisper_language()
+                # The prompt is English; it drags non-English output into English
+                # (and biases auto-detect). Only use it for English transcription.
+                prompt = C.PROMPT if lang in (None, "en") else None
+                segments, info = self.model.transcribe(
+                    audio, language=lang, beam_size=C.BEAM_SIZE,
+                    vad_filter=C.VAD_FILTER, condition_on_previous_text=False,
+                    without_timestamps=True, initial_prompt=prompt)
                 text = "".join(s.text for s in segments).strip()
                 dt = time.time() - t0
-                print(f"[blurt] transcribed in {dt:.2f}s: {text!r}", flush=True)
+                lang = getattr(info, "language", None)
+                prob = getattr(info, "language_probability", None)
+                tag = (f" [{lang} {prob:.0%}]" if lang and prob is not None
+                       else f" [{lang}]" if lang else "")
+                print(f"[blurt] transcribed in {dt:.2f}s{tag}: {text!r}", flush=True)
                 self._timing.append((round(duration, 2), round(dt, 3)))
                 self._save_timing()
                 if text:
