@@ -7,3 +7,9 @@ __pycache__/
 # Editor / OS cruft
 *.swp
 .DS_Store
+
+# makepkg build artifacts
+/pkg/
+/src/
+*.pkg.tar.zst
+*.tar.gz
