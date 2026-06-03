@@ -73,7 +73,14 @@ def _as_bool(v):
 
 
 # --- model / transcription --------------------------------------------------
-MODEL_NAME = _get("model", "name", "large-v3-turbo", "BLURT_MODEL")
+# "auto" picks a model by device (see resolve_model): the big, accurate model on
+# a CUDA GPU, a smaller/faster one on CPU. Or set an explicit faster-whisper
+# model (e.g. "large-v3-turbo", "small.en") to force it on both.
+MODEL_NAME = _get("model", "name", "auto", "BLURT_MODEL")
+# Models used when name = "auto". large-v3-turbo is great on GPU but ~2.5x slower
+# than realtime on CPU, so CPU falls back to a much faster English model.
+GPU_MODEL = _get("model", "gpu_name", "large-v3-turbo", "BLURT_GPU_MODEL")
+CPU_MODEL = _get("model", "cpu_name", "small.en", "BLURT_CPU_MODEL")
 _DEVICE = _get("model", "device", "auto", "BLURT_DEVICE")
 _COMPUTE = _get("model", "compute", "auto", "BLURT_COMPUTE")
 LANGUAGE = _get("model", "language", "en", "BLURT_LANG")
@@ -156,6 +163,13 @@ def resolve_device():
     if compute == "auto":
         compute = "int8_float16" if device == "cuda" else "int8"
     return device, compute
+
+
+def resolve_model(device):
+    """Model to load: honour an explicit name, else pick one for the device."""
+    if str(MODEL_NAME).lower() != "auto":
+        return MODEL_NAME
+    return GPU_MODEL if device == "cuda" else CPU_MODEL
 
 
 def _have(cmd):
@@ -257,7 +271,9 @@ DEFAULT_CONFIG = """\
 # blurt configuration. Environment variables (BLURT_*) override these.
 
 [model]
-name = "large-v3-turbo"   # any faster-whisper model, e.g. "small.en", "medium.en"
+name = "auto"             # "auto" picks by device (below); or force one, e.g. "large-v3-turbo", "small.en"
+gpu_name = "large-v3-turbo"  # model used when a CUDA GPU is available (accurate)
+cpu_name = "small.en"        # model used on CPU (much faster than large-v3 there)
 device = "auto"           # "auto" | "cuda" | "cpu"
 compute = "auto"          # "auto" | "int8" | "int8_float16" | "float16" | "float32"
 language = "en"

@@ -7,12 +7,14 @@ Whisper; nothing is sent to the cloud.
 
 - 🎤 **Toggle to dictate** — start/stop with a hotkey, the mouse forward button,
   or `blurt toggle` bound to any shortcut.
-- ⚡ **Fast** — Whisper `large-v3-turbo` via faster-whisper/CTranslate2, with
-  automatic **int8** quantization (≈4× faster than fp16 on GTX 16xx/20xx GPUs).
+- ⚡ **Whisper** via faster-whisper/CTranslate2 with **int8** quantization. On a
+  **CUDA GPU** it runs `large-v3-turbo` faster than realtime; on **CPU** it picks
+  a smaller, much faster English model automatically (see *GPU vs CPU* below).
 - 🧠 **Accurate, punctuated English** out of the box.
 - 📊 **Live overlay** — a translucent, draggable bell-shaped equaliser that
   reacts to your **voice** (Silero VAD gating ignores music/noise).
-- 🖥️ **GPU optional** — uses CUDA automatically if present, falls back to CPU.
+- 🖥️ **Picks the right model for your hardware** — `model.name = "auto"` uses
+  the big model on a GPU and a fast one on CPU; override either in the config.
 - ⌨️ Types into the focused window via `xdotool` (X11) or `wtype`/`ydotool`
   (Wayland).
 
@@ -106,6 +108,20 @@ can't do push-to-talk; use the mouse button or `input.key` for hold).
 text field is focused — just paste.
 
 The overlay position is saved to `~/.config/blurt/ui.json` when you drag it.
+
+## GPU vs CPU
+
+blurt runs on **CPU by default** when installed from the AUR. The packaged
+`ctranslate2` is built **without CUDA**, so even with an NVIDIA GPU the AUR
+install transcribes on CPU. To keep that usable, `model.name = "auto"` loads a
+small, fast English model on CPU (`small.en`) instead of `large-v3-turbo`, which
+is ~2.5× slower than realtime on CPU. You can pick any model in the config.
+
+**Want GPU speed?** The PyPI `ctranslate2` wheel bundles CUDA and runs
+`large-v3-turbo` faster than realtime on a modest GPU (e.g. a GTX 1660). For now
+that means running blurt from a venv with `pip install ctranslate2
+faster-whisper` (which is how the dev setup runs); a one-command `blurt
+enable-gpu` helper that sets this up for you is planned.
 
 ## X11 vs Wayland
 
