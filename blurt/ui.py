@@ -1,17 +1,21 @@
 """
-blurt recording overlay: a translucent, rounded, always-on-top pill with a
-volume-responsive bouncing equaliser (bell-shaped). Reads newline-separated
-levels (0..1) on stdin from the daemon. Never takes keyboard focus. Drag it to
-move; the position is saved. Run as `python -m blurt.ui`.
+blurt recording overlay.
 
-Window placement and dragging rely on the X11 window manager. Under Wayland the
-bell still renders, but the compositor controls placement and dragging may be
-unavailable — that's a Wayland limitation, not a bug.
+Two states, driven by lines on stdin from the daemon:
+  - "<float>"   -> recording: a volume-responsive bell-shaped equaliser.
+  - "T <secs>"  -> transcribing: the window stays up and shows a progress bar.
+                   secs > 0 gives a determinate bar (estimated from history);
+                   secs <= 0 gives an indeterminate "Transcribing…" animation.
+  - stdin EOF   -> finish: fill the bar and close.
+
+Never takes keyboard focus. Drag to move; position is saved. Run via
+`python -m blurt.ui`. Placement/dragging rely on the X11 window manager.
 """
 import os
 import sys
 import json
 import math
+import time
 import random
 import cairo
 import gi
@@ -53,6 +57,7 @@ def save_position(x, y):
 
 
 def rounded_rect(cr, x, y, w, h, r):
+    r = min(r, w / 2, h / 2)
     cr.new_sub_path()
     cr.arc(x + w - r, y + r, r, -math.pi / 2, 0)
     cr.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
@@ -61,7 +66,7 @@ def rounded_rect(cr, x, y, w, h, r):
     cr.close_path()
 
 
-class Waveform(Gtk.Window):
+class Overlay(Gtk.Window):
     def __init__(self):
         super().__init__(type=Gtk.WindowType.TOPLEVEL)
         self.set_decorated(False)
@@ -88,6 +93,7 @@ class Waveform(Gtk.Window):
             self.move(mon.x + (mon.width - W) // 2,
                       mon.y + int(mon.height * DEFAULT_Y_FRAC))
 
+        # recording state
         self.levels = [0.0] * N_BARS
         self.vel = [0.0] * N_BARS
         center = (N_BARS - 1) / 2.0
@@ -101,6 +107,14 @@ class Waveform(Gtk.Window):
         self.target = 0.0
         self.phase = 0.0
         self.dot = 0.0
+
+        # transcribing state
+        self.mode = "recording"      # "recording" | "transcribing"
+        self.est = None
+        self.t_trans = 0.0
+        self.prog = 0.0
+        self.finishing = False
+        self._quit_scheduled = False
         self._save_id = 0
 
         self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
@@ -117,6 +131,7 @@ class Waveform(Gtk.Window):
         monitor = display.get_primary_monitor() or display.get_monitor(0)
         return monitor.get_geometry()
 
+    # ---- dragging + persistence ----------------------------------------
     def on_button(self, _w, ev):
         if ev.button == 1:
             self.begin_move_drag(ev.button, int(ev.x_root), int(ev.y_root), ev.time)
@@ -133,23 +148,53 @@ class Waveform(Gtk.Window):
         save_position(*self.get_position())
         return False
 
+    # ---- input ---------------------------------------------------------
     def on_stdin(self, _fd, cond):
         if cond & GLib.IO_HUP:
-            Gtk.main_quit()
-            return False
+            return self._on_eof()
         line = sys.stdin.readline()
         if not line:
-            Gtk.main_quit()
-            return False
-        try:
-            self.target = max(0.0, min(1.0, float(line.strip())))
-        except ValueError:
-            pass
+            return self._on_eof()
+        line = line.strip()
+        if line.startswith("T"):
+            parts = line.split()
+            try:
+                secs = float(parts[1]) if len(parts) > 1 else -1.0
+            except ValueError:
+                secs = -1.0
+            self.mode = "transcribing"
+            self.est = secs if secs > 0 else None
+            self.t_trans = time.monotonic()
+            self.prog = 0.0
+        else:
+            try:
+                self.target = max(0.0, min(1.0, float(line)))
+            except ValueError:
+                pass
         return True
 
+    def _on_eof(self):
+        # Daemon closed the pipe. If transcribing, complete the bar then quit;
+        # otherwise quit immediately.
+        if self.mode == "transcribing":
+            self.finishing = True
+            return False   # stop watching stdin; the tick loop finishes the bar
+        Gtk.main_quit()
+        return False
+
+    # ---- animation -----------------------------------------------------
     def on_tick(self):
-        self.cur += (self.target - self.cur) * 0.5
         self.phase += 0.22
+        self.dot = (self.dot + 0.05) % 1.0
+        if self.mode == "recording":
+            self._tick_recording()
+        else:
+            self._tick_transcribing()
+        self.queue_draw()
+        return True
+
+    def _tick_recording(self):
+        self.cur += (self.target - self.cur) * 0.5
         for i in range(N_BARS):
             wobble = 0.93 + 0.07 * math.sin(self.phase * self.bfreq[i] + self.bphase[i])
             idle = 0.04 * self.env[i] * (0.6 + 0.4 * math.sin(
@@ -158,10 +203,18 @@ class Waveform(Gtk.Window):
             self.vel[i] += (desired - self.levels[i]) * 0.55
             self.vel[i] *= 0.55
             self.levels[i] = max(0.0, min(1.0, self.levels[i] + self.vel[i]))
-        self.dot = (self.dot + 0.05) % 1.0
-        self.queue_draw()
-        return True
 
+    def _tick_transcribing(self):
+        if self.finishing:
+            self.prog += (1.0 - self.prog) * 0.35
+            if self.prog >= 0.995 and not self._quit_scheduled:
+                self._quit_scheduled = True
+                GLib.timeout_add(140, Gtk.main_quit)
+        elif self.est:
+            elapsed = time.monotonic() - self.t_trans
+            self.prog = min(0.92, elapsed / self.est)
+
+    # ---- drawing -------------------------------------------------------
     def on_draw(self, _w, cr):
         cr.set_operator(1)
         cr.set_source_rgba(0, 0, 0, 0)
@@ -175,19 +228,21 @@ class Waveform(Gtk.Window):
         cr.set_line_width(1.2)
         cr.stroke()
 
-        dot_y = H / 2
+        if self.mode == "recording":
+            self._draw_recording(cr)
+        else:
+            self._draw_transcribing(cr)
+        return False
+
+    def _draw_dot(self, cr, color):
         pulse = 0.5 + 0.5 * math.sin(self.dot * 2 * math.pi)
-        cr.arc(34, dot_y, 7, 0, 2 * math.pi)
-        cr.set_source_rgba(0.96, 0.27, 0.34, 0.55 + 0.45 * pulse)
+        cr.arc(34, H / 2, 7, 0, 2 * math.pi)
+        cr.set_source_rgba(*color, 0.55 + 0.45 * pulse)
         cr.fill()
 
-        cr.select_font_face("Sans", 0, 0)
-        cr.set_font_size(15)
-        cr.set_source_rgba(0.92, 0.94, 0.98, 0.92)
-        cr.move_to(50, H / 2 + 5)
-        cr.show_text("Listening")
-
-        area_x0, area_x1 = PAD_L, W - PAD_R
+    def _draw_recording(self, cr):
+        self._draw_dot(cr, (0.96, 0.27, 0.34))
+        area_x0, area_x1 = 58, W - 26
         step = (area_x1 - area_x0) / N_BARS
         mid = H / 2
         max_h = (H - 30) / 2
@@ -200,11 +255,44 @@ class Waveform(Gtk.Window):
             cr.set_source(grad)
             rounded_rect(cr, x, mid - h, BAR_W, 2 * h, BAR_W / 2)
             cr.fill()
-        return False
+
+    def _draw_transcribing(self, cr):
+        self._draw_dot(cr, (1.0, 0.72, 0.22))
+        tx0, tx1 = 58, W - 26
+        tw = tx1 - tx0
+        th = 9
+        ty = H / 2 - th / 2
+        # track
+        rounded_rect(cr, tx0, ty, tw, th, th / 2)
+        cr.set_source_rgba(1, 1, 1, 0.10)
+        cr.fill()
+
+        def fill_grad():
+            g = cairo.LinearGradient(tx0, 0, tx1, 0)
+            g.add_color_stop_rgba(0, *ACCENT_TOP, 0.95)
+            g.add_color_stop_rgba(1, *ACCENT_BOT, 0.95)
+            return g
+
+        if self.est or self.finishing:
+            w = max(th, tw * max(0.0, min(1.0, self.prog)))
+            rounded_rect(cr, tx0, ty, w, th, th / 2)
+            cr.set_source(fill_grad())
+            cr.fill()
+        else:
+            # indeterminate marquee
+            seg = tw * 0.3
+            travel = tw + seg
+            pos = (self.phase * 14) % travel - seg
+            x0 = max(tx0, tx0 + pos)
+            x1 = min(tx1, tx0 + pos + seg)
+            if x1 > x0:
+                rounded_rect(cr, x0, ty, x1 - x0, th, th / 2)
+                cr.set_source(fill_grad())
+                cr.fill()
 
 
 def main():
-    Waveform()
+    Overlay()
     Gtk.main()
 
 
