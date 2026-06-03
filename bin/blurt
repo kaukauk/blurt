@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+# blurt launcher. When installed, the package lives in /usr/lib/blurt.
+import os
+import sys
+
+_pkg = "/usr/lib/blurt"
+if os.path.isdir(os.path.join(_pkg, "blurt")) and _pkg not in sys.path:
+    sys.path.insert(0, _pkg)
+
+from blurt.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    main()
