@@ -110,7 +110,7 @@ hotkey / mouse button ──▶ blurt toggle ──(unix socket)──▶ blurt 
 ## Build / run from source
 
 ```bash
-git clone https://github.com/REPLACE_ME/blurt && cd blurt
+git clone https://github.com/kaukauk/blurt && cd blurt
 makepkg -si          # build & install the package
 # or run in place:
 python -m blurt daemon

@@ -1,10 +1,10 @@
-# Maintainer: REPLACE_ME <your-email@example.com>
+# Maintainer: kaukauk <karthik@gamebench.net>
 pkgname=blurt
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Fast, local, push-to-toggle speech-to-text dictation (Whisper) that types into the focused window"
 arch=('any')
-url="https://github.com/REPLACE_ME/blurt"
+url="https://github.com/kaukauk/blurt"
 license=('MIT')
 install="$pkgname.install"
 depends=(

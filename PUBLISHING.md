@@ -1,21 +1,24 @@
 # Publishing blurt to GitHub + the AUR
 
-Everything is prepared. These are the steps only you can do (they need your
-accounts). Replace `YOURUSER` / `YOURNAME` / email as appropriate.
+Placeholders are already filled in (GitHub user `kaukauk`,
+`karthik@gamebench.net`). These are the steps only you can do — they need your
+accounts. (Optionally set your real name in `LICENSE`, currently "blurt authors".)
 
-## 0. Fill in the placeholders
+## ⚠️ 0. First, verify it works when *installed* (not via the dev venv)
 
-Search the repo for `REPLACE_ME` and set them:
-
-- `PKGBUILD`  → `# Maintainer:` line and `url=`
-- `data/blurt.service` → `Documentation=` URL
-- `README.md` → clone URL
-- `LICENSE`   → copyright holder (currently "blurt authors")
+On this machine blurt runs from a Python **3.12 venv** because the system Python
+is 3.14, which `ctranslate2` may not support yet. The AUR package instead uses
+the **system** Python via `python-faster-whisper` (AUR). Before publishing,
+confirm that whole chain builds and runs on your current system Python:
 
 ```bash
-cd ~/Documents/GitHub/linux-stt
-grep -rn REPLACE_ME .   # find them all
+yay -S python-faster-whisper python-sounddevice   # builds python-ctranslate2
+python -c "import faster_whisper, sounddevice, ctranslate2; print('ok')"
 ```
+
+If that fails (e.g. ctranslate2 won't build for Python 3.14), the package will
+install but not run for users on that Python — hold off, or pin/patch the dep.
+If it prints `ok`, you're good to publish.
 
 ## 1. Push to GitHub
 
@@ -23,7 +26,7 @@ Create an empty repo named **blurt** on GitHub (no README/license — we have
 them), then:
 
 ```bash
-git remote add origin git@github.com:YOURUSER/blurt.git
+git remote add origin git@github.com:kaukauk/blurt.git
 git branch -M main
 git push -u origin main
 ```
@@ -36,7 +39,7 @@ git push origin v0.1.0
 ```
 
 GitHub auto-creates the source tarball at
-`https://github.com/YOURUSER/blurt/archive/refs/tags/v0.1.0.tar.gz`, which is
+`https://github.com/kaukauk/blurt/archive/refs/tags/v0.1.0.tar.gz`, which is
 what `source=()` in the PKGBUILD points to.
 
 ## 3. Lock the checksum and test the build

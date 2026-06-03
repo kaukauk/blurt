@@ -1,6 +1,6 @@
 [Unit]
 Description=blurt local dictation daemon
-Documentation=https://github.com/REPLACE_ME/blurt
+Documentation=https://github.com/kaukauk/blurt
 After=graphical-session.target
 PartOf=graphical-session.target
 
