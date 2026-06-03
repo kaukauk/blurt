@@ -1,0 +1,9 @@
+# Python virtualenv (large, machine-specific — recreate with uv)
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS cruft
+*.swp
+.DS_Store
