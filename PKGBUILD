@@ -1,4 +1,4 @@
-# Maintainer: kaukauk <karthik@gamebench.net>
+# Maintainer: kaukauk <kaustubhkarthik@gmail.com>
 pkgname=blurt
 pkgver=0.1.0
 pkgrel=1
