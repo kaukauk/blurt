@@ -1,109 +1,101 @@
-# linux-stt — local push-to-toggle dictation
+# blurt
 
-Fast, accurate, fully-local speech-to-text for Linux/X11. Press **Alt+Space**
-(or your **mouse forward button**) to start dictating, press **Space** (or the
-forward button again) to stop — the transcript is typed straight into whatever
-window has focus. The trigger keystrokes are swallowed, so neither the starting
-Alt+Space nor the stopping Space leaves a stray character behind.
+**Fast, local, push-to-toggle speech-to-text dictation for Linux.** Press a key
+(or your mouse's forward button), speak, press again — your words are typed
+straight into whatever window has focus. Everything runs locally with OpenAI
+Whisper; nothing is sent to the cloud.
 
-## What it uses
+- 🎤 **Toggle to dictate** — start/stop with a hotkey, the mouse forward button,
+  or `blurt toggle` bound to any shortcut.
+- ⚡ **Fast** — Whisper `large-v3-turbo` via faster-whisper/CTranslate2, with
+  automatic **int8** quantization (≈4× faster than fp16 on GTX 16xx/20xx GPUs).
+- 🧠 **Accurate, punctuated English** out of the box.
+- 📊 **Live overlay** — a translucent, draggable bell-shaped equaliser that
+  reacts to your **voice** (Silero VAD gating ignores music/noise).
+- 🖥️ **GPU optional** — uses CUDA automatically if present, falls back to CPU.
+- ⌨️ Types into the focused window via `xdotool` (X11) or `wtype`/`ydotool`
+  (Wayland).
 
-- **Model:** OpenAI Whisper `large-v3-turbo` (809M params) via
-  [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2).
-- **Acceleration:** NVIDIA GPU, `float16` (your GTX 1660 SUPER, CUDA + bundled
-  cuDNN/cuBLAS wheels — no system CUDA install needed).
-- **Audio:** default microphone via PortAudio (`sounddevice`), 16 kHz mono.
-- **Typing:** `xdotool type` into the focused window (X11).
-- **Overlay:** a translucent, rounded, always-on-top pill (`ui_waveform.py`,
-  GTK3 + Cairo) appears while recording, showing a **volume-responsive bouncing
-  equaliser** of what the mic hears. It never takes keyboard focus, so your text
-  field stays the typing target. Defaults to the upper-middle of the screen;
-  **click-drag it anywhere and the position is saved** to
-  `~/.config/linux-stt/ui.json`. The daemon streams live mic levels to it at
-  60 fps over a pipe.
-- **Hotkeys:**
-  - **Alt+Space = start.** Bound as an XFCE keyboard shortcut to `<Alt>space`.
-    Because XFCE grabs the combo, **no stray space is inserted**. (XFCE's default
-    Alt+Space "window menu" was disabled to free the combo.)
-  - **Mouse forward button (button 9) = toggle.** Press to start, press again to
-    stop. The daemon holds an active X grab on the button, so it both triggers
-    recording and is consumed (no forward-navigation while bound). Change the
-    button with `STT_MOUSE_BUTTON` (set `0` to disable).
-  - **Space = stop.** While recording, the daemon holds an **active X key-grab**
-    on Space (via `python-xlib`), so the press is delivered to the daemon and
-    **swallowed** — it never reaches the focused window. A 0.4 s debounce ignores
-    a stray Space right after start. (Verified: with the grab active, a focused
-    test window receives no Space; without it, the window receives it.)
-- **Lifecycle:** a `systemd --user` service starts the daemon at login and keeps
-  the model resident in VRAM, so each dictation starts instantly.
+## Install (Arch / AUR)
 
-Accuracy/speed sanity check (JFK clip, 11 s): transcribed verbatim in ~5 s the
-first time, and ~0.4× real-time after warm-up. Short dictation snippets feel
-near-instant.
+```bash
+# with an AUR helper
+yay -S blurt        # or: paru -S blurt
+
+# enable it at login and bind a hotkey
+systemctl --user enable --now blurt.service
+```
+
+Then bind **`blurt toggle`** to a keyboard shortcut in your desktop settings
+(e.g. *Settings → Keyboard → Shortcuts*). On **X11** the daemon also grabs the
+**mouse forward button** (toggle) and **Space** (stop while recording)
+automatically — no extra config.
+
+First run downloads the model (~1.5 GB) to `~/.cache/huggingface`.
+
+## Usage
+
+```
+blurt toggle     # start, or stop+transcribe if already recording
+blurt start      # start recording
+blurt stop       # stop and transcribe
+blurt daemon     # run the daemon in the foreground (debug)
+blurt version
+```
+
+## Configuration
+
+All optional, via environment variables (set them in the service with
+`systemctl --user edit blurt.service`):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BLURT_MODEL` | `large-v3-turbo` | any faster-whisper model (`small.en`, `medium.en`, …) |
+| `BLURT_DEVICE` | `auto` | `cuda` / `cpu` (auto-detects CUDA) |
+| `BLURT_COMPUTE` | `auto` | `int8`, `int8_float16`, `float16`, `float32` |
+| `BLURT_LANG` | `en` | language code |
+| `BLURT_PROMPT` | (punctuation primer) | `initial_prompt` to bias style |
+| `BLURT_UI` | `1` | `0` disables the waveform overlay |
+| `BLURT_VAD` | `1` | `0` disables voice-activity gating of the overlay |
+| `BLURT_MOUSE_BUTTON` | `9` | mouse button to toggle (X11); `0` disables |
+| `BLURT_TYPER` | auto | force `xdotool` / `wtype` / `ydotool` |
+
+The overlay position is saved to `~/.config/blurt/ui.json` when you drag it.
+
+## X11 vs Wayland
+
+- **X11 (recommended):** everything works — global hotkey grabs, mouse-button
+  toggle, Space-to-stop (all swallowed so they don't leak to your app), and the
+  draggable always-on-top overlay.
+- **Wayland:** transcription and typing work (via `wtype`/`ydotool`), but
+  **global hotkeys, button-grabbing, and Space-to-stop are compositor-specific**
+  and not grabbed by blurt. Drive it by binding `blurt toggle` to a compositor
+  shortcut. The overlay renders, but placement/dragging is limited by the
+  compositor.
 
 ## How it works
 
 ```
-Alt+Space ──(XFCE shortcut)──▶ stt-toggle start ──(unix socket)──▶ stt_daemon.py
-                                                                       │
-                                  start mic recording ◀────────────────┤
-   Space ──(X key-grab inside daemon, swallowed)──▶ stop → transcribe → xdotool type
+hotkey / mouse button ──▶ blurt toggle ──(unix socket)──▶ blurt daemon
+                                                              │
+                              record mic ◀─────────────────────┤
+   stop ──▶ Whisper transcribe ──▶ type into focused window (xdotool/wtype)
+            overlay shows a VAD-gated bell of your voice while recording
 ```
 
-## Files
-
-| File | Purpose |
-|------|---------|
-| `stt_daemon.py`   | Long-running daemon: loads the model, records, transcribes, types. |
-| `run-daemon.sh`   | Launcher; puts the bundled NVIDIA libs on `LD_LIBRARY_PATH`. |
-| `stt-toggle`      | Tiny client that sends a command (`start`/`stop`/`toggle`) to the daemon. Alt+Space runs `stt-toggle start`. |
-| `ui_waveform.py`  | The recording overlay (bouncing EQ). Run by the daemon with the system Python (GTK3/Cairo). Drag to move; position saved to `~/.config/linux-stt/ui.json`. Disable with `STT_UI=0`. |
-| `.venv/`          | Python 3.12 virtualenv with all dependencies. |
-| `~/.config/systemd/user/linux-stt.service` | Autostart + supervision. |
-
-## Managing it
+## Build / run from source
 
 ```bash
-systemctl --user status  linux-stt      # is it running?
-systemctl --user restart linux-stt      # restart (e.g. after editing config)
-systemctl --user stop    linux-stt      # stop
-systemctl --user disable linux-stt      # don't start on login
-journalctl --user -u linux-stt -f       # live logs
+git clone https://github.com/REPLACE_ME/blurt && cd blurt
+makepkg -si          # build & install the package
+# or run in place:
+python -m blurt daemon
 ```
 
-The Alt+Space binding lives in XFCE settings
-(`Settings → Keyboard → Application Shortcuts`, or
-`xfconf-query -c xfce4-keyboard-shortcuts -p '/commands/custom/<Alt>space'`).
-The Space-to-stop is handled inside the daemon, not by XFCE.
+Dependencies: `python-faster-whisper`, `python-sounddevice`, `python-numpy`,
+`python-xlib`, `python-gobject`, `python-cairo`, `gtk3`, `libnotify`, and one of
+`xdotool` / `wtype` / `ydotool`. Optional: `cuda` + `cudnn` for GPU.
 
-## Tuning
+## License
 
-Environment variables read at startup (set them in the `[Service]` section of the
-unit file as `Environment=...`, then `systemctl --user daemon-reload && restart`):
-
-- `STT_MODEL`   (default `large-v3-turbo`) — e.g. `small.en`, `medium.en`, `distil-large-v3`.
-- `STT_COMPUTE` (default `int8_float16`) — int8 is ~4x faster than `float16` on
-  Turing GPUs (GTX 16xx/20xx) with no accuracy loss here, because they lack
-  tensor cores but have fast int8. Use `float16` on newer RTX cards if preferred,
-  `float32` for CPU.
-- `STT_DEVICE`  (default `cuda`) — set `cpu` to run without the GPU.
-- `STT_LANG`    (default `en`).
-- `STT_PROMPT`  — `initial_prompt` that primes punctuation/capitalization (turbo
-  drops these on short dictation otherwise). Default is a punctuation-rich
-  priming sentence; it never appears in the output.
-- `STT_UI`      — set `0` to disable the waveform overlay.
-- `STT_VAD`     — set `0` to disable voice-activity gating of the overlay. When
-  on (default), the bell only reacts when Silero VAD detects speech, so music
-  and noise are ignored even in the voice band. Uses the Silero model bundled
-  with faster-whisper (CPU, ~0.24 ms/call — negligible).
-
-Transcription quality knobs (`beam_size`, `vad_filter`) are in `stt_daemon.py`.
-`vad_filter=True` is what suppresses Whisper's "Thank you." hallucination on
-silence.
-
-## Notes / limitations
-
-- **X11 only** (uses `xdotool`). On Wayland you'd swap in `ydotool`/`wtype`.
-- First run after a reboot reloads the model from disk cache (~1–2 s).
-- Recording uses the system **default** input device; change it in
-  `pavucontrol`/your audio settings.
+MIT — see [LICENSE](LICENSE).
