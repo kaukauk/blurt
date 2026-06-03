@@ -90,7 +90,12 @@ MIN_SECONDS = float(_get("model", "min_seconds", 0.3, "BLURT_MIN_SECONDS", float
 # --- input ------------------------------------------------------------------
 # mode: "toggle" (press to start, press/stop-key to stop) or "hold" (push-to-talk)
 MODE = str(_get("input", "mode", "toggle", "BLURT_MODE")).lower()
-MOUSE_BUTTON = int(_get("input", "mouse_button", 9, "BLURT_MOUSE_BUTTON", int))
+# Mouse button that toggles plain dictation: start, or stop + transcribe + type
+# (no Enter). Default 8 = mouse "back"; 0 disables.
+TOGGLE_BUTTON = int(_get("input", "toggle_button", 8, "BLURT_TOGGLE_BUTTON", int))
+# Mouse button that toggles "submit" dictation: start, or stop + transcribe +
+# type, then press Enter. Default 9 = mouse "forward"; 0 disables.
+SUBMIT_BUTTON = int(_get("input", "submit_button", 9, "BLURT_SUBMIT_BUTTON", int))
 # Optional global trigger key the daemon grabs directly, e.g. "ctrl+grave".
 # Empty by default: most desktops reserve common combos (Alt+Space is the XFCE
 # window menu), so binding `blurt toggle` to a key in your DE is more reliable.
@@ -98,6 +103,15 @@ MOUSE_BUTTON = int(_get("input", "mouse_button", 9, "BLURT_MOUSE_BUTTON", int))
 TRIGGER_KEY = _get("input", "key", "", "BLURT_KEY")
 # Key that stops while recording in toggle mode (no modifiers). "" disables.
 STOP_KEY = _get("input", "stop_key", "space", "BLURT_STOP_KEY")
+# Key that stops + transcribes + presses Enter ("submit") while recording in
+# toggle mode. Default "enter"; "" disables.
+SUBMIT_KEY = _get("input", "submit_key", "enter", "BLURT_SUBMIT_KEY")
+# Key that cancels + discards the recording (no transcription, nothing typed)
+# while recording in toggle mode. Default "alt+backspace" (Alt+Delete is
+# reserved by some desktops, e.g. XFCE); "" disables.
+CANCEL_KEY = _get("input", "cancel_key", "alt+backspace", "BLURT_CANCEL_KEY")
+# Seconds to wait after typing before pressing Enter (lets the app catch up).
+SUBMIT_DELAY = float(_get("input", "submit_delay", 0.6, "BLURT_SUBMIT_DELAY", float))
 
 # --- ui / features ----------------------------------------------------------
 SHOW_UI = _as_bool(_get("ui", "enabled", True, "BLURT_UI"))
@@ -183,6 +197,24 @@ def type_text(text):
         print(f"[blurt] typing via {TYPER} failed: {e}", file=sys.stderr)
 
 
+def press_enter():
+    """Press the Enter/Return key in the focused window (best-effort)."""
+    if not TYPER:
+        return
+    try:
+        if TYPER == "xdotool":
+            cmd = ["xdotool", "key", "--clearmodifiers", "Return"]
+        elif TYPER == "wtype":
+            cmd = ["wtype", "-k", "Return"]
+        elif TYPER == "ydotool":
+            cmd = ["ydotool", "key", "28:1", "28:0"]  # 28 = KEY_ENTER
+        else:
+            return
+        subprocess.run(cmd, check=False)
+    except Exception as e:
+        print(f"[blurt] press Enter via {TYPER} failed: {e}", file=sys.stderr)
+
+
 def notify(title, body="", icon="audio-input-microphone"):
     if not NOTIFY:
         return
@@ -233,8 +265,12 @@ beam_size = 5
 
 [input]
 mode = "toggle"           # "toggle" (press start / press stop) or "hold" (push-to-talk)
-mouse_button = 9          # mouse button to trigger (9 = forward); 0 to disable
+toggle_button = 8         # mouse button: start, or stop + transcribe (no Enter); 0 disables
+submit_button = 9         # mouse button: start, or stop + transcribe, then Enter; 0 disables
 stop_key = "space"        # key that stops while recording in toggle mode; "" to disable
+submit_key = "enter"      # while recording: stop, transcribe, then press Enter; "" to disable
+cancel_key = "alt+backspace" # while recording: cancel + discard (nothing typed); "" to disable
+submit_delay = 0.6        # seconds to wait after typing before pressing Enter
 # key = "ctrl+grave"      # optional: have blurt grab a key directly. Most desktops
 #                         # reserve combos like Alt+Space, so prefer binding
 #                         # `blurt toggle` to a hotkey in your DE. Required for

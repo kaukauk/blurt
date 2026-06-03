@@ -27,9 +27,12 @@ systemctl --user enable --now blurt.service
 ```
 
 Then bind **`blurt toggle`** to a keyboard shortcut in your desktop settings
-(e.g. *Settings → Keyboard → Shortcuts*). On **X11** the daemon also grabs the
-**mouse forward button** (toggle) and **Space** (stop while recording)
-automatically — no extra config.
+(e.g. *Settings → Keyboard → Shortcuts*). On **X11** the daemon also grabs two
+**mouse buttons** automatically: **button 8 (back)** toggles plain dictation and
+**button 9 (forward)** toggles *submit* dictation (it presses **Enter** after
+typing — handy for chat boxes and search bars). While recording you can also
+press **Space** to stop, **Enter** to stop + submit, or **Alt+Backspace** to
+cancel and discard — no extra config.
 
 First run downloads the model (~1.5 GB) to `~/.cache/huggingface`.
 
@@ -37,6 +40,8 @@ First run downloads the model (~1.5 GB) to `~/.cache/huggingface`.
 
 ```
 blurt toggle     # start, or stop+transcribe if already recording
+blurt submit     # like toggle, but also presses Enter after transcribing
+blurt cancel     # stop recording and discard it (nothing transcribed)
 blurt start      # start recording
 blurt stop       # stop and transcribe
 blurt config     # write/locate ~/.config/blurt/config.toml
@@ -70,8 +75,12 @@ beam_size = 5
 
 [input]
 mode = "toggle"           # "toggle" (press start / press stop) or "hold" (push-to-talk)
-mouse_button = 9          # mouse button to trigger (9 = forward); 0 disables
+toggle_button = 8         # mouse button: start, or stop + transcribe (no Enter); 0 disables
+submit_button = 9         # mouse button: start, or stop + transcribe, then Enter; 0 disables
 stop_key = "space"        # key that stops while recording (toggle mode); "" disables
+submit_key = "enter"      # while recording: stop, transcribe, then press Enter; "" disables
+cancel_key = "alt+backspace" # while recording: cancel + discard (nothing typed); "" disables
+submit_delay = 0.6        # seconds to wait after typing before pressing Enter
 # key = "ctrl+grave"      # optional key blurt grabs directly (see note below)
 # typer = "xdotool"       # force xdotool | wtype | ydotool
 
