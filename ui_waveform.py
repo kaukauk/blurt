@@ -100,8 +100,11 @@ class Waveform(Gtk.Window):
 
         self.levels = [0.0] * N_BARS   # current bar heights (0..1)
         self.vel = [0.0] * N_BARS      # per-bar velocity (for springy bounce)
-        # Static envelope: bars are tallest in the middle, shorter at the edges.
-        self.env = [0.45 + 0.55 * math.sin(math.pi * (i + 0.5) / N_BARS)
+        # Static envelope: a balanced Gaussian bell curve — tall in the centre,
+        # tapering smoothly to small at both edges.
+        center = (N_BARS - 1) / 2.0
+        sigma = N_BARS / 4.5
+        self.env = [math.exp(-((i - center) ** 2) / (2 * sigma ** 2))
                     for i in range(N_BARS)]
         # Each bar gets an INDEPENDENT oscillator (random phase + frequency) so
         # there is no phase that marches across the bars -> no left/right "flow".
@@ -168,10 +171,9 @@ class Waveform(Gtk.Window):
         self.cur += (self.target - self.cur) * 0.5
         self.phase += 0.22
         for i in range(N_BARS):
-            # Independent per-bar oscillators (random phase/freq) -> bars jitter
-            # in place with no wave marching across them (no left/right flow).
-            wobble = 0.78 + 0.22 * math.sin(self.phase * self.bfreq[i] + self.bphase[i])
-            idle = 0.05 * (0.5 + 0.5 * math.sin(
+            # Small independent shimmer keeps it alive but keeps tops on the bell.
+            wobble = 0.93 + 0.07 * math.sin(self.phase * self.bfreq[i] + self.bphase[i])
+            idle = 0.04 * self.env[i] * (0.6 + 0.4 * math.sin(
                 self.phase * 0.5 * self.bfreq[i] + self.bphase[i]))
             desired = max(idle, self.cur * self.env[i] * wobble)
             # Spring toward the target: snappy attack, softer settle => bounce.
