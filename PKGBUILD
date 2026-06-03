@@ -17,6 +17,7 @@ depends=(
   'python-cairo'
   'gtk3'
   'libnotify'
+  'xdg-utils'
 )
 optdepends=(
   'xdotool: typing + global hotkeys on X11 (recommended)'

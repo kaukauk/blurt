@@ -17,6 +17,7 @@ commands:
   start      start recording
   stop       stop recording and transcribe
   config     write a default config.toml (if missing) and print its path
+  report     open a pre-filled GitHub bug report in your browser
   ui         run the waveform overlay standalone (debug)
   version    print version
 
@@ -57,6 +58,15 @@ def main(argv=None):
         print(("created " if created else "exists  ") + C.CONFIG_FILE)
         if not created:
             print("(edit it, then `systemctl --user restart blurt`)")
+    elif cmd == "report":
+        from . import report
+        body = report.issue_body()
+        path = report.write_report(body)
+        print("Opening a pre-filled GitHub issue in your browser — review and submit.")
+        if path:
+            print("Diagnostics also saved to", path)
+        if not report.open_browser(report.issue_url("blurt: bug report", body)):
+            print("Could not open a browser; the report is in the file above.")
     elif cmd in ("version", "--version", "-v"):
         print(f"blurt {__version__}")
     else:

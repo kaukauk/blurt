@@ -15,6 +15,7 @@ import time
 import json
 import socket
 import threading
+import traceback
 import subprocess
 
 import numpy as np
@@ -22,6 +23,54 @@ import sounddevice as sd
 from faster_whisper import WhisperModel
 
 from . import config as C
+from . import report
+
+
+_last_popup = 0.0
+
+
+def report_error(summary, tb_text):
+    """Log an error locally and (throttled) pop up a one-click report dialog."""
+    global _last_popup
+    report.log_exception(summary, tb_text)
+    print(f"[blurt] ERROR: {summary}", file=sys.stderr)
+    if not C.ERROR_POPUP:
+        return
+    now = time.time()
+    if now - _last_popup < 20:   # don't spam dialogs
+        return
+    _last_popup = now
+    try:
+        title = f"blurt error: {summary}"
+        url = report.issue_url(title, report.issue_body(error_text=tb_text))
+        payload = json.dumps({"summary": summary, "url": url, "log": C.LOG_FILE})
+        env = dict(os.environ)
+        pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env["PYTHONPATH"] = pkg_parent + os.pathsep + env.get("PYTHONPATH", "")
+        p = subprocess.Popen([C.UI_PYTHON, "-m", "blurt.errordialog"],
+                             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, env=env)
+        p.stdin.write((payload + "\n").encode())
+        p.stdin.flush()
+        p.stdin.close()
+    except Exception as e:
+        print(f"[blurt] could not show error popup: {e}", file=sys.stderr)
+
+
+def _install_excepthooks():
+    def main_hook(exc_type, exc, tb):
+        report_error(f"{exc_type.__name__}: {exc}",
+                     "".join(traceback.format_exception(exc_type, exc, tb)))
+
+    def thread_hook(args):
+        if args.exc_type is SystemExit:
+            return
+        report_error(f"{args.exc_type.__name__}: {args.exc_value}",
+                     "".join(traceback.format_exception(
+                         args.exc_type, args.exc_value, args.exc_traceback)))
+
+    sys.excepthook = main_hook
+    threading.excepthook = thread_hook
 
 _XOK = False
 if C.is_x11():
@@ -513,24 +562,28 @@ class Daemon:
                     C.notify("Too short", "No audio captured")
                 self._finish_ui()
                 return
-            if not progress:
-                C.notify("✍️ Transcribing…")
-            t0 = time.time()
-            segments, _ = self.model.transcribe(
-                audio, language=C.LANGUAGE, beam_size=C.BEAM_SIZE, vad_filter=True,
-                condition_on_previous_text=False, without_timestamps=True,
-                initial_prompt=C.PROMPT)
-            text = "".join(s.text for s in segments).strip()
-            dt = time.time() - t0
-            print(f"[blurt] transcribed in {dt:.2f}s: {text!r}", flush=True)
-            self._timing.append((round(duration, 2), round(dt, 3)))
-            self._save_timing()
-            self._finish_ui()
-            if text:
-                C.copy_clipboard(text)   # so it's never lost if nothing is focused
-                C.type_text(text)
-            elif not progress:
-                C.notify("No speech detected")
+            try:
+                if not progress:
+                    C.notify("✍️ Transcribing…")
+                t0 = time.time()
+                segments, _ = self.model.transcribe(
+                    audio, language=C.LANGUAGE, beam_size=C.BEAM_SIZE,
+                    vad_filter=True, condition_on_previous_text=False,
+                    without_timestamps=True, initial_prompt=C.PROMPT)
+                text = "".join(s.text for s in segments).strip()
+                dt = time.time() - t0
+                print(f"[blurt] transcribed in {dt:.2f}s: {text!r}", flush=True)
+                self._timing.append((round(duration, 2), round(dt, 3)))
+                self._save_timing()
+                if text:
+                    C.copy_clipboard(text)  # never lost if nothing is focused
+                    C.type_text(text)
+                elif not progress:
+                    C.notify("No speech detected")
+            except Exception:
+                report_error("transcription failed", traceback.format_exc())
+            finally:
+                self._finish_ui()
 
     # --- socket server ----------------------------------------------------
     def serve(self):
@@ -565,6 +618,7 @@ class Daemon:
 
 
 def main():
+    _install_excepthooks()
     Daemon().serve()
 
 
