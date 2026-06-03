@@ -101,9 +101,17 @@ class Recorder:
         if self.recording:
             with self._lock:
                 self._frames.append(indata.copy())
-            # Perceptual level for the waveform: RMS, gained and soft-clipped.
-            rms = float(np.sqrt(np.mean(np.square(indata))))
-            self.level = min(1.0, (rms ** 0.6) * 6.5)
+            # Visualiser level, weighted toward the speech band so the bell
+            # reacts mainly to voice, not to bass-heavy / instrumental music.
+            x = indata[:, 0] if indata.ndim > 1 else indata
+            if x.size >= 4:
+                hp = np.diff(x)                                  # high-pass: kills bass/beats
+                hp = 0.25 * hp[:-2] + 0.5 * hp[1:-1] + 0.25 * hp[2:]  # gentle low-pass
+                rms = float(np.sqrt(np.mean(np.square(hp))))
+            else:
+                rms = 0.0
+            level = (rms ** 0.6) * 17.0
+            self.level = 0.0 if level < 0.05 else min(1.0, level)  # noise gate
 
     def start(self):
         with self._lock:
