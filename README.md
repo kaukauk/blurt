@@ -45,20 +45,44 @@ blurt version
 
 ## Configuration
 
-All optional, via environment variables (set them in the service with
-`systemctl --user edit blurt.service`):
+Run `blurt config` to create `~/.config/blurt/config.toml`, then edit it and
+`systemctl --user restart blurt`. Every setting also has a `BLURT_*` env override.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `BLURT_MODEL` | `large-v3-turbo` | any faster-whisper model (`small.en`, `medium.en`, …) |
-| `BLURT_DEVICE` | `auto` | `cuda` / `cpu` (auto-detects CUDA) |
-| `BLURT_COMPUTE` | `auto` | `int8`, `int8_float16`, `float16`, `float32` |
-| `BLURT_LANG` | `en` | language code |
-| `BLURT_PROMPT` | (punctuation primer) | `initial_prompt` to bias style |
-| `BLURT_UI` | `1` | `0` disables the waveform overlay |
-| `BLURT_VAD` | `1` | `0` disables voice-activity gating of the overlay |
-| `BLURT_MOUSE_BUTTON` | `9` | mouse button to toggle (X11); `0` disables |
-| `BLURT_TYPER` | auto | force `xdotool` / `wtype` / `ydotool` |
+```toml
+[model]
+name = "large-v3-turbo"   # any faster-whisper model: small.en, medium.en, …
+device = "auto"           # auto | cuda | cpu
+compute = "auto"          # auto | int8 | int8_float16 | float16 | float32
+language = "en"
+beam_size = 5
+
+[input]
+mode = "toggle"           # "toggle" (press start / press stop) or "hold" (push-to-talk)
+mouse_button = 9          # mouse button to trigger (9 = forward); 0 disables
+stop_key = "space"        # key that stops while recording (toggle mode); "" disables
+# key = "ctrl+grave"      # optional key blurt grabs directly (see note below)
+# typer = "xdotool"       # force xdotool | wtype | ydotool
+
+[ui]
+enabled = true            # show the waveform overlay
+vad = true                # only react to voice (Silero VAD), not music
+progress = true           # keep the window up with a progress bar while transcribing
+notifications = false     # desktop popups (off — the overlay shows state)
+
+[output]
+clipboard = true          # also copy each transcription to the clipboard
+```
+
+**Start key.** Bind **`blurt toggle`** to a shortcut in your desktop settings —
+that's the portable way to get a global start/stop key on any DE. blurt can also
+grab a key directly via `input.key`, but most desktops reserve common combos
+(e.g. XFCE owns Alt+Space), so a DE binding is more reliable. `input.key` *is*
+required for **hold** mode on a key (a DE binding only sends one event, so it
+can't do push-to-talk; use the mouse button or `input.key` for hold).
+
+**Clipboard.** Every transcription is also copied to the clipboard (needs
+`xclip`/`xsel` on X11 or `wl-clipboard` on Wayland), so nothing is lost if no
+text field is focused — just paste.
 
 The overlay position is saved to `~/.config/blurt/ui.json` when you drag it.
 

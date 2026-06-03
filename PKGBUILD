@@ -22,6 +22,8 @@ optdepends=(
   'xdotool: typing + global hotkeys on X11 (recommended)'
   'wtype: typing on Wayland'
   'ydotool: typing on Wayland (alternative)'
+  'xclip: copy transcription to clipboard on X11'
+  'wl-clipboard: copy transcription to clipboard on Wayland'
   'cuda: GPU acceleration'
   'cudnn: GPU acceleration (with CUDA)'
 )

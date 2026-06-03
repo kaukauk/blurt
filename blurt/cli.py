@@ -16,6 +16,7 @@ commands:
   toggle     start recording, or stop+transcribe if already recording
   start      start recording
   stop       stop recording and transcribe
+  config     write a default config.toml (if missing) and print its path
   ui         run the waveform overlay standalone (debug)
   version    print version
 
@@ -51,6 +52,11 @@ def main(argv=None):
         ui.main()
     elif cmd in ("toggle", "start", "stop"):
         sys.exit(0 if _send(cmd) else 1)
+    elif cmd == "config":
+        created = C.write_default_config()
+        print(("created " if created else "exists  ") + C.CONFIG_FILE)
+        if not created:
+            print("(edit it, then `systemctl --user restart blurt`)")
     elif cmd in ("version", "--version", "-v"):
         print(f"blurt {__version__}")
     else:
