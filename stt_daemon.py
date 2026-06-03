@@ -36,6 +36,14 @@ SAMPLE_RATE  = 16000
 CHANNELS     = 1
 MIN_SECONDS  = 0.3   # ignore accidental ultra-short taps
 
+# Bias the model toward correct punctuation & capitalization. This text is only
+# context (it never appears in the output) but it primes Whisper's writing style,
+# which turbo otherwise tends to drop on short dictation.
+PUNCT_PROMPT = os.environ.get(
+    "STT_PROMPT",
+    "Hello. Here is the dictation, written with correct punctuation, "
+    "capitalization, commas, periods, and question marks?")
+
 RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
 SOCKET_PATH = os.path.join(RUNTIME_DIR, "stt-daemon.sock")
 
@@ -298,6 +306,7 @@ class Daemon:
                 beam_size=5,
                 vad_filter=True,
                 condition_on_previous_text=False,
+                initial_prompt=PUNCT_PROMPT,
             )
             text = "".join(s.text for s in segments).strip()
             dt = time.time() - t0

@@ -80,6 +80,10 @@ unit file as `Environment=...`, then `systemctl --user daemon-reload && restart`
 - `STT_COMPUTE` (default `float16`) — `int8_float16` saves VRAM, `float32` for CPU.
 - `STT_DEVICE`  (default `cuda`) — set `cpu` to run without the GPU.
 - `STT_LANG`    (default `en`).
+- `STT_PROMPT`  — `initial_prompt` that primes punctuation/capitalization (turbo
+  drops these on short dictation otherwise). Default is a punctuation-rich
+  priming sentence; it never appears in the output.
+- `STT_UI`      — set `0` to disable the waveform overlay.
 
 Transcription quality knobs (`beam_size`, `vad_filter`) are in `stt_daemon.py`.
 `vad_filter=True` is what suppresses Whisper's "Thank you." hallucination on
