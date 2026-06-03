@@ -2,11 +2,14 @@
 blurt daemon: loads Whisper once and keeps it resident, records on demand,
 transcribes, and types the result into the focused window.
 
-Triggers (X11): a configurable key (default Alt+Space), a configurable mouse
-button (default 9 = forward), and a stop-key (default Space, toggle mode only).
-Mode is "toggle" (press start / press stop) or "hold" (push-to-talk). All grabs
-are swallowed so they don't leak to the focused window. On Wayland the grabs are
-skipped; drive blurt with `blurt toggle` bound to a compositor shortcut.
+Triggers (X11): an optional global key (default off), two mouse buttons —
+button 8 toggles plain dictation (stop + transcribe) and button 9 toggles
+"submit" dictation (stop + transcribe, then press Enter) — and, in toggle mode
+while recording, a stop-key (Space), a submit-key (Enter), and a cancel chord
+(Alt+Delete, which discards the recording). Mode is "toggle" (press start /
+press stop) or "hold" (push-to-talk). All grabs are swallowed so they don't leak
+to the focused window. On Wayland the grabs are skipped; drive blurt with
+`blurt toggle` / `blurt submit` / `blurt cancel` bound to compositor shortcuts.
 """
 
 import os
@@ -152,6 +155,9 @@ def _parse_keyspec(disp, spec):
     modmap = {"shift": X.ShiftMask, "ctrl": X.ControlMask, "control": X.ControlMask,
               "alt": X.Mod1Mask, "mod1": X.Mod1Mask, "super": X.Mod4Mask,
               "meta": X.Mod4Mask, "win": X.Mod4Mask, "hyper": X.Mod4Mask}
+    keyalias = {"enter": "Return", "return": "Return", "esc": "Escape",
+                "del": "Delete", "ins": "Insert", "pgup": "Prior", "pgdn": "Next",
+                "backspace": "BackSpace", "bksp": "BackSpace", "tab": "Tab"}
     parts = [p for p in str(spec).lower().replace(" ", "").split("+") if p]
     if not parts:
         return None
@@ -161,6 +167,7 @@ def _parse_keyspec(disp, spec):
         if m not in modmap:
             print(f"[blurt] unknown modifier {m!r} in key {spec!r}", file=sys.stderr)
         mask |= modmap.get(m, 0)
+    key = keyalias.get(key, key)
     ks = XK.string_to_keysym(key) or XK.string_to_keysym(key.capitalize())
     if not ks:
         print(f"[blurt] unknown key {key!r} in {spec!r}", file=sys.stderr)
@@ -282,17 +289,28 @@ class ButtonTrigger:
 
 
 class StopKey:
-    """X key-grab active only while recording (toggle mode); press -> stop."""
+    """X key-grab active only while recording (toggle mode); press -> callback.
 
-    def __init__(self, kc, on_stop):
+    Supports an optional modifier mask (e.g. Alt for Alt+Delete), so it only
+    fires on the exact chord and leaves the bare key alone the rest of the time.
+    """
+
+    def __init__(self, mask, kc, on_stop, label="key"):
+        self._mask = mask
         self._kc = kc
         self._on_stop = on_stop
+        self._label = label
+        self._errs = 0
+        self._warned = False
         self._disp = Display()
-        self._disp.set_error_handler(lambda *_a: None)
+        self._disp.set_error_handler(lambda *_a: self._bump())
         self._root = self._disp.screen().root
         self._want = False
         self._grabbed = False
         threading.Thread(target=self._loop, daemon=True).start()
+
+    def _bump(self):
+        self._errs += 1
 
     def start(self):
         self._want = True
@@ -301,17 +319,22 @@ class StopKey:
         self._want = False
 
     def _set_grab(self, on):
+        before = self._errs
         for e in _LOCK_COMBOS:
             try:
                 if on:
-                    self._root.grab_key(self._kc, e, True,
+                    self._root.grab_key(self._kc, self._mask | e, True,
                                         X.GrabModeAsync, X.GrabModeAsync)
                 else:
-                    self._root.ungrab_key(self._kc, e)
+                    self._root.ungrab_key(self._kc, self._mask | e)
             except Exception:
                 pass
-        self._disp.flush()
+        self._disp.sync()
         self._grabbed = on
+        if on and self._errs > before and not self._warned:
+            self._warned = True
+            print(f"[blurt] could not grab {self._label!r} (reserved by your "
+                  f"desktop?); pick a different key in config.toml", file=sys.stderr)
 
     def _loop(self):
         fd = self._disp.fileno()
@@ -349,7 +372,7 @@ class Daemon:
         self._rec_start = 0.0
         self._ui = None
         self._ui_phase = None     # "recording" | "transcribing" | None
-        self._stopkey = None
+        self._rec_triggers = []   # grabs active only while recording (stop/submit)
         self._timing = self._load_timing()
 
         if _XOK:
@@ -383,15 +406,35 @@ class Daemon:
                 KeyTrigger(spec[0], spec[1], C.MODE, self.start_recording,
                            self.stop_recording, self.toggle, label=C.TRIGGER_KEY)
                 print(f"[blurt] key {C.TRIGGER_KEY!r} -> {C.MODE}", flush=True)
-        if C.MOUSE_BUTTON > 0:
-            ButtonTrigger(C.MOUSE_BUTTON, C.MODE, self.start_recording,
+        # Plain-toggle button: start, or stop + transcribe (no Enter).
+        if C.TOGGLE_BUTTON > 0:
+            ButtonTrigger(C.TOGGLE_BUTTON, C.MODE, self.start_recording,
                           self.stop_recording, self.toggle)
-            print(f"[blurt] mouse button {C.MOUSE_BUTTON} -> {C.MODE}", flush=True)
+            print(f"[blurt] toggle button {C.TOGGLE_BUTTON} -> {C.MODE}", flush=True)
+        # Submit-toggle button: start, or stop + transcribe, then press Enter.
+        if C.SUBMIT_BUTTON > 0:
+            ButtonTrigger(C.SUBMIT_BUTTON, C.MODE, self.start_recording,
+                          lambda: self.stop_recording(submit=True), self.submit)
+            print(f"[blurt] submit button {C.SUBMIT_BUTTON} -> {C.MODE}", flush=True)
         if C.MODE == "toggle" and C.STOP_KEY:
             sk = _parse_keyspec(disp, C.STOP_KEY)
             if sk:
-                self._stopkey = StopKey(sk[1], self.stop_recording)
+                self._rec_triggers.append(
+                    StopKey(sk[0], sk[1], self.stop_recording, label=C.STOP_KEY))
                 print(f"[blurt] stop key {C.STOP_KEY!r}", flush=True)
+        if C.MODE == "toggle" and C.SUBMIT_KEY:
+            sub = _parse_keyspec(disp, C.SUBMIT_KEY)
+            if sub:
+                self._rec_triggers.append(
+                    StopKey(sub[0], sub[1], lambda: self.stop_recording(submit=True),
+                            label=C.SUBMIT_KEY))
+                print(f"[blurt] submit key {C.SUBMIT_KEY!r}", flush=True)
+        if C.MODE == "toggle" and C.CANCEL_KEY:
+            cn = _parse_keyspec(disp, C.CANCEL_KEY)
+            if cn:
+                self._rec_triggers.append(
+                    StopKey(cn[0], cn[1], self.cancel_recording, label=C.CANCEL_KEY))
+                print(f"[blurt] cancel key {C.CANCEL_KEY!r}", flush=True)
         disp.close()
 
     # --- timing history / estimate ----------------------------------------
@@ -522,18 +565,18 @@ class Daemon:
             self.recorder.level = 0.0
             self.recorder.start()
             self._rec_start = time.time()
-            if self._stopkey:
-                self._stopkey.start()
+            for t in self._rec_triggers:
+                t.start()
             self._start_ui()
             C.notify("🎙️ Recording…", "Say something")
             print("[blurt] recording started", flush=True)
 
-    def stop_recording(self):
+    def stop_recording(self, submit=False):
         with self._ctl:
             if not self.recorder.recording:
                 return
-            if self._stopkey:
-                self._stopkey.stop()
+            for t in self._rec_triggers:
+                t.stop()
             audio = self.recorder.stop()
             dur = len(audio) / C.SAMPLE_RATE
             print(f"[blurt] recording stopped ({dur:.1f}s)", flush=True)
@@ -546,7 +589,8 @@ class Daemon:
                 self._ui_write(f"T {est if est is not None else -1:.3f}\n")
             else:
                 self._stop_ui()
-            threading.Thread(target=self._transcribe, args=(audio, dur, progress),
+            threading.Thread(target=self._transcribe,
+                             args=(audio, dur, progress, submit),
                              daemon=True).start()
 
     def toggle(self):
@@ -555,7 +599,26 @@ class Daemon:
         else:
             self.start_recording()
 
-    def _transcribe(self, audio, duration, progress):
+    def submit(self):
+        """Like toggle, but on stop also presses Enter after transcribing."""
+        if self.recorder.recording:
+            self.stop_recording(submit=True)
+        else:
+            self.start_recording()
+
+    def cancel_recording(self):
+        """Stop recording and discard the audio — nothing is transcribed/typed."""
+        with self._ctl:
+            if not self.recorder.recording:
+                return
+            for t in self._rec_triggers:
+                t.stop()
+            self.recorder.stop()   # clears the buffer; we ignore the audio
+            self._stop_ui()
+            C.notify("Cancelled", "Recording discarded")
+            print("[blurt] recording cancelled (discarded)", flush=True)
+
+    def _transcribe(self, audio, duration, progress, submit=False):
         with self.busy:
             if audio.size < C.SAMPLE_RATE * C.MIN_SECONDS:
                 if not progress:
@@ -578,6 +641,9 @@ class Daemon:
                 if text:
                     C.copy_clipboard(text)  # never lost if nothing is focused
                     C.type_text(text)
+                    if submit:
+                        time.sleep(C.SUBMIT_DELAY)  # let the app settle, then send
+                        C.press_enter()
                 elif not progress:
                     C.notify("No speech detected")
             except Exception:
@@ -595,7 +661,8 @@ class Daemon:
         srv.listen(8)
         print(f"[blurt] listening on {C.SOCKET_PATH}", flush=True)
         handlers = {"start": self.start_recording, "stop": self.stop_recording,
-                    "toggle": self.toggle}
+                    "toggle": self.toggle, "submit": self.submit,
+                    "cancel": self.cancel_recording}
         while True:
             conn, _ = srv.accept()
             try:

@@ -14,6 +14,8 @@ usage: blurt <command>
 commands:
   daemon     run the dictation daemon (loads the model, stays resident)
   toggle     start recording, or stop+transcribe if already recording
+  submit     like toggle, but also presses Enter after transcribing
+  cancel     stop recording and discard it (nothing transcribed)
   start      start recording
   stop       stop recording and transcribe
   config     write a default config.toml (if missing) and print its path
@@ -51,7 +53,7 @@ def main(argv=None):
     elif cmd == "ui":
         from . import ui
         ui.main()
-    elif cmd in ("toggle", "start", "stop"):
+    elif cmd in ("toggle", "submit", "cancel", "start", "stop"):
         sys.exit(0 if _send(cmd) else 1)
     elif cmd == "config":
         created = C.write_default_config()
