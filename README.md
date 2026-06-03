@@ -44,6 +44,8 @@ First run downloads the model (~1.5 GB) to `~/.cache/huggingface`.
 blurt toggle     # start, or stop+transcribe if already recording
 blurt submit     # like toggle, but also presses Enter after transcribing
 blurt cancel     # stop recording and discard it (nothing transcribed)
+blurt settings   # open the settings window (edit keybinds, mode, …)
+blurt gpu        # set up GPU acceleration; `blurt gpu --disable` to revert
 blurt start      # start recording
 blurt stop       # stop and transcribe
 blurt config     # write/locate ~/.config/blurt/config.toml
@@ -109,19 +111,34 @@ text field is focused — just paste.
 
 The overlay position is saved to `~/.config/blurt/ui.json` when you drag it.
 
+## Settings
+
+Run **`blurt settings`** (or click the ⚙ on the overlay while recording) to open
+a window where you can:
+
+- **Rebind everything** — start/stop, submit, stop, cancel. Click a bind (or
+  **Add**) and blurt listens for the next key or mouse button and assigns it.
+- **Add unlimited alternates** per action — every one is grabbed and consumes
+  the input, just like the defaults.
+- Switch **toggle ↔ hold** mode, tune the **submit delay**, and toggle clipboard.
+
+Saving writes `~/.config/blurt/config.toml` and tells the running daemon to
+reload instantly — no restart, no model reload.
+
 ## GPU vs CPU
 
 blurt runs on **CPU by default** when installed from the AUR. The packaged
 `ctranslate2` is built **without CUDA**, so even with an NVIDIA GPU the AUR
 install transcribes on CPU. To keep that usable, `model.name = "auto"` loads a
 small, fast English model on CPU (`small.en`) instead of `large-v3-turbo`, which
-is ~2.5× slower than realtime on CPU. You can pick any model in the config.
+is ~2.5× slower than realtime on CPU.
 
-**Want GPU speed?** The PyPI `ctranslate2` wheel bundles CUDA and runs
-`large-v3-turbo` faster than realtime on a modest GPU (e.g. a GTX 1660). For now
-that means running blurt from a venv with `pip install ctranslate2
-faster-whisper` (which is how the dev setup runs); a one-command `blurt
-enable-gpu` helper that sets this up for you is planned.
+**Want GPU speed?** Run **`blurt gpu`**. It creates a private venv with the PyPI
+`ctranslate2` wheel (which is built with CUDA + bundles cuBLAS/cuDNN), verifies a
+real GPU transcription works, and switches the daemon to it running
+`large-v3-turbo` — faster than realtime on a modest GPU (e.g. a GTX 1660). The
+overlay/dialogs keep using the system Python. Revert any time with
+`blurt gpu --disable` (add `--purge` to also delete the venv).
 
 ## X11 vs Wayland
 

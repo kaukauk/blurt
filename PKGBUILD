@@ -1,6 +1,6 @@
 # Maintainer: kaukauk <kaustubhkarthik@gmail.com>
 pkgname=blurt
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Fast, local, push-to-toggle speech-to-text dictation (Whisper) that types into the focused window"
 arch=('any')
