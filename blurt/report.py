@@ -64,7 +64,7 @@ def diagnostics():
         "OS": _os_name(),
         "session": C.session_type() or "?",
         "device/compute": f"{device} / {compute}",
-        "model": C.MODEL_NAME,
+        "model": C.resolve_model(device),
         "GPU": _gpu(),
         "typer": C.TYPER or "none",
     }

@@ -359,10 +359,11 @@ class StopKey:
 class Daemon:
     def __init__(self):
         device, compute = C.resolve_device()
-        print(f"[blurt] loading '{C.MODEL_NAME}' on {device} ({compute}) ...",
+        model_name = C.resolve_model(device)
+        print(f"[blurt] loading '{model_name}' on {device} ({compute}) ...",
               flush=True)
         t0 = time.time()
-        self.model = WhisperModel(C.MODEL_NAME, device=device, compute_type=compute)
+        self.model = WhisperModel(model_name, device=device, compute_type=compute)
         print(f"[blurt] model ready in {time.time() - t0:.1f}s", flush=True)
 
         self.recorder = Recorder()
