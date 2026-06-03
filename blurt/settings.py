@@ -283,13 +283,28 @@ class Settings(Gtk.Window):
                                     "on a submit bind.")
         grid.attach(self.delay, 1, 1, 1, 1)
 
-        grid.attach(Gtk.Label(label="Copy to clipboard", xalign=0), 0, 2, 1, 1)
+        grid.attach(Gtk.Label(label="Language", xalign=0), 0, 2, 1, 1)
+        self.language = Gtk.ComboBoxText.new_with_entry()
+        for code in ("auto", "keyboard", "en", "ko", "ja", "zh", "es", "fr", "de"):
+            self.language.append_text(code)
+        cur = str(C.LANGUAGE).strip().lower() or "auto"
+        self.language.get_child().set_text(cur)
+        self.language.set_tooltip_text(
+            "auto = detect each utterance from the audio.\n"
+            "keyboard = follow your active keyboard layout / input method "
+            "(fcitx5, ibus, KDE, xkb-switch) — switch your keyboard to a "
+            "language and dictation comes out in it.\n"
+            "Or pin a code like en / ko / de. Needs a multilingual model "
+            "(large-v3-turbo); the .en models are English-only.")
+        grid.attach(self.language, 1, 2, 1, 1)
+
+        grid.attach(Gtk.Label(label="Copy to clipboard", xalign=0), 0, 3, 1, 1)
         self.clipboard = Gtk.Switch()
         self.clipboard.set_active(bool(C.CLIPBOARD))
         self.clipboard.set_halign(Gtk.Align.START)
-        grid.attach(self.clipboard, 1, 2, 1, 1)
+        grid.attach(self.clipboard, 1, 3, 1, 1)
 
-        for w in (self.mode, self.delay):
+        for w in (self.mode, self.delay, self.language):
             w.connect("changed" if isinstance(w, Gtk.ComboBoxText)
                       else "value-changed", lambda *_: self.mark_dirty())
         self.clipboard.connect("notify::active", lambda *_: self.mark_dirty())
@@ -303,6 +318,7 @@ class Settings(Gtk.Window):
             "keybinds": {r.action: r.binds for r in self.rows},
             "input": {"mode": self.mode.get_active_text(),
                       "submit_delay": round(self.delay.get_value(), 2)},
+            "model": {"language": (self.language.get_active_text() or "auto").strip().lower()},
             "output": {"clipboard": self.clipboard.get_active()},
         }
         try:
