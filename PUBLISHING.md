@@ -1,7 +1,7 @@
 # Publishing blurt to GitHub + the AUR
 
 Placeholders are already filled in (GitHub user `kaukauk`,
-`karthik@gamebench.net`). These are the steps only you can do — they need your
+`kaustubhkarthik@gmail.com`). These are the steps only you can do — they need your
 accounts. (Optionally set your real name in `LICENSE`, currently "blurt authors".)
 
 ## ⚠️ 0. First, verify it works when *installed* (not via the dev venv)
