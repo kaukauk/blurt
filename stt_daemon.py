@@ -36,6 +36,13 @@ SAMPLE_RATE  = 16000
 CHANNELS     = 1
 MIN_SECONDS  = 0.3   # ignore accidental ultra-short taps
 
+# Voice-activity gating for the visualiser: the bell only reacts when Silero VAD
+# thinks it's hearing speech, so music/noise (even in the voice band) is ignored.
+ENABLE_VAD   = os.environ.get("STT_VAD", "1") != "0"
+VAD_WINDOW   = 1536   # samples fed to Silero each tick (multiple of 512)
+VAD_ON       = 0.45   # gate fully open at/above this speech probability
+VAD_OFF      = 0.25   # gate fully closed at/below this
+
 # Bias the model toward correct punctuation & capitalization. This text is only
 # context (it never appears in the output) but it primes Whisper's writing style,
 # which turbo otherwise tends to drop on short dictation.
@@ -86,6 +93,8 @@ class Recorder:
         self._lock = threading.Lock()
         self.recording = False
         self.level = 0.0          # latest mic level (0..1) for the visualiser
+        self.speech = 0.0         # smoothed Silero speech probability (0..1)
+        self._vadbuf = np.zeros(VAD_WINDOW, dtype=np.float32)
         self.stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
@@ -99,11 +108,17 @@ class Recorder:
         if status:
             print(f"[stt] audio status: {status}", file=sys.stderr)
         if self.recording:
+            x = indata[:, 0] if indata.ndim > 1 else indata
             with self._lock:
                 self._frames.append(indata.copy())
+                # Keep a rolling window of recent audio for the VAD worker.
+                n = x.size
+                if n >= VAD_WINDOW:
+                    self._vadbuf = x[-VAD_WINDOW:].astype(np.float32).copy()
+                elif n > 0:
+                    self._vadbuf = np.concatenate([self._vadbuf[n:], x]).astype(np.float32)
             # Visualiser level, weighted toward the speech band so the bell
             # reacts mainly to voice, not to bass-heavy / instrumental music.
-            x = indata[:, 0] if indata.ndim > 1 else indata
             if x.size >= 4:
                 hp = np.diff(x)                                  # high-pass: kills bass/beats
                 hp = 0.25 * hp[:-2] + 0.5 * hp[1:-1] + 0.25 * hp[2:]  # gentle low-pass
@@ -113,9 +128,15 @@ class Recorder:
             level = (rms ** 0.6) * 17.0
             self.level = 0.0 if level < 0.05 else min(1.0, level)  # noise gate
 
+    def vad_window(self):
+        with self._lock:
+            return self._vadbuf.copy()
+
     def start(self):
         with self._lock:
             self._frames = []
+            self._vadbuf[:] = 0.0
+        self.speech = 0.0
         self.recording = True
 
     def stop(self):
@@ -212,6 +233,17 @@ class Daemon:
         self._rec_start = 0.0
         self._stopper = SpaceStopper(self._on_space)  # swallows Space to stop
         self._ui = None                               # waveform overlay process
+        # Voice-activity model for gating the visualiser (cheap, CPU, bundled).
+        self._vad = None
+        if ENABLE_VAD:
+            try:
+                from faster_whisper.vad import get_vad_model
+                self._vad = get_vad_model()
+                threading.Thread(target=self._vad_loop, daemon=True).start()
+                print("[stt] VAD gate enabled", flush=True)
+            except Exception as e:
+                print(f"[stt] VAD unavailable ({e}); falling back to level only",
+                      file=sys.stderr)
         # Warm up CUDA kernels so the first real transcription isn't slow.
         try:
             list(self.model.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32),
@@ -231,6 +263,32 @@ class Daemon:
             return
         print("[stt] space pressed -> stop", flush=True)
         self.stop_recording()
+
+    # --- voice-activity gate ----------------------------------------------
+    def _vad_loop(self):
+        """Continuously estimate speech probability while recording."""
+        while True:
+            if not self.recorder.recording:
+                self.recorder.speech = 0.0
+                time.sleep(0.05)
+                continue
+            try:
+                out = np.asarray(self._vad(self.recorder.vad_window())).reshape(-1)
+                p = float(out.max()) if out.size else 0.0
+            except Exception:
+                p = 0.0
+            # Fast attack, slow release: hold the gate briefly across word gaps.
+            cur = self.recorder.speech
+            a = 0.6 if p > cur else 0.18
+            self.recorder.speech = cur + (p - cur) * a
+            time.sleep(0.03)
+
+    def _gate(self):
+        """0..1 multiplier from the smoothed speech probability."""
+        if self._vad is None:
+            return 1.0
+        p = self.recorder.speech
+        return max(0.0, min(1.0, (p - VAD_OFF) / (VAD_ON - VAD_OFF)))
 
     # --- waveform overlay -------------------------------------------------
     def _start_ui(self):
@@ -253,7 +311,8 @@ class Daemon:
         """Stream the live mic level to the overlay at ~60 Hz."""
         try:
             while proc.poll() is None and self.recorder.recording:
-                proc.stdin.write(f"{self.recorder.level:.4f}\n".encode())
+                lvl = self.recorder.level * self._gate()  # gate by speech activity
+                proc.stdin.write(f"{lvl:.4f}\n".encode())
                 proc.stdin.flush()
                 time.sleep(1 / 60)
         except (BrokenPipeError, OSError):

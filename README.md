@@ -84,6 +84,10 @@ unit file as `Environment=...`, then `systemctl --user daemon-reload && restart`
   drops these on short dictation otherwise). Default is a punctuation-rich
   priming sentence; it never appears in the output.
 - `STT_UI`      — set `0` to disable the waveform overlay.
+- `STT_VAD`     — set `0` to disable voice-activity gating of the overlay. When
+  on (default), the bell only reacts when Silero VAD detects speech, so music
+  and noise are ignored even in the voice band. Uses the Silero model bundled
+  with faster-whisper (CPU, ~0.24 ms/call — negligible).
 
 Transcription quality knobs (`beam_size`, `vad_filter`) are in `stt_daemon.py`.
 `vad_filter=True` is what suppresses Whisper's "Thank you." hallucination on
