@@ -92,7 +92,8 @@ if _XOK:
 
 
 class Recorder:
-    """Continuous input stream that buffers audio only while `recording`."""
+    """Opens the microphone only while recording — the input stream is created
+    on start() and torn down on stop(), so the mic isn't held open at idle."""
 
     def __init__(self):
         self._frames = []
@@ -101,10 +102,7 @@ class Recorder:
         self.level = 0.0
         self.speech = 0.0
         self._vadbuf = np.zeros(C.VAD_WINDOW, dtype=np.float32)
-        self.stream = sd.InputStream(
-            samplerate=C.SAMPLE_RATE, channels=C.CHANNELS,
-            dtype="float32", callback=self._callback, blocksize=0)
-        self.stream.start()
+        self.stream = None
 
     def _callback(self, indata, frames, time_info, status):
         if status:
@@ -133,20 +131,43 @@ class Recorder:
             return self._vadbuf.copy()
 
     def start(self):
+        """Open the mic and begin buffering. Returns False if it can't open."""
         with self._lock:
             self._frames = []
             self._vadbuf[:] = 0.0
         self.speech = 0.0
+        self.level = 0.0
         self.recording = True
+        try:
+            self.stream = sd.InputStream(
+                samplerate=C.SAMPLE_RATE, channels=C.CHANNELS,
+                dtype="float32", callback=self._callback, blocksize=0)
+            self.stream.start()
+        except Exception as e:
+            self.recording = False
+            self.stream = None
+            print(f"[blurt] could not open microphone: {e}", file=sys.stderr)
+            return False
+        return True
 
     def stop(self):
         self.recording = False
+        self._close_stream()
         with self._lock:
             frames = self._frames
             self._frames = []
         if not frames:
             return np.zeros(0, dtype=np.float32)
         return np.concatenate(frames, axis=0).reshape(-1)
+
+    def _close_stream(self):
+        s, self.stream = self.stream, None
+        if s is not None:
+            try:
+                s.stop()
+                s.close()
+            except Exception as e:
+                print(f"[blurt] error closing microphone: {e}", file=sys.stderr)
 
 
 # --- X11 input triggers ------------------------------------------------------
@@ -740,7 +761,10 @@ class Daemon:
             if self.recorder.recording:
                 return
             self.recorder.level = 0.0
-            self.recorder.start()
+            if not self.recorder.start():
+                C.notify("Microphone unavailable", "Could not open the mic")
+                self._stop_ui()
+                return
             self._rec_start = time.time()
             for t in self._rec_triggers:
                 t.start()
