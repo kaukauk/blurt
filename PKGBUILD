@@ -31,7 +31,7 @@ optdepends=(
 # Note: the packaged python-ctranslate2 is CPU-only, so installing cuda/cudnn
 # does NOT enable GPU. GPU needs the PyPI ctranslate2 wheel (see README).
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('0ee00fa2671d409d30e854b935b8146fb38100d8a21b3d349ea6866ba1c144a8')
+sha256sums=('7e953f0dc3f75b2303ecc2c7d2dea7f99e9335836652f90e643aaccb2a1ad1c8')
 
 package() {
   cd "$srcdir/$pkgname-$pkgver"
