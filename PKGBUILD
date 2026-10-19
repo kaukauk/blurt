@@ -1,7 +1,7 @@
 # Maintainer: kaukauk <kaustubhkarthik@gmail.com>
 pkgname=blurt
 pkgver=0.1.3
-pkgrel=1
+pkgrel=2
 pkgdesc="Fast, local, push-to-toggle speech-to-text dictation (Whisper) that types into the focused window"
 arch=('any')
 url="https://github.com/kaukauk/blurt"
@@ -31,7 +31,7 @@ optdepends=(
 # Note: the packaged python-ctranslate2 is CPU-only, so installing cuda/cudnn
 # does NOT enable GPU. GPU needs the PyPI ctranslate2 wheel (see README).
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('7e953f0dc3f75b2303ecc2c7d2dea7f99e9335836652f90e643aaccb2a1ad1c8')
+sha256sums=('dc2994c9ae26517b88d469aa65109c2af329b21155f9d216b8a50785ccf9a442')
 
 package() {
   cd "$srcdir/$pkgname-$pkgver"
